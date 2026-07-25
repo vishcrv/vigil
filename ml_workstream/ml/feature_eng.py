@@ -10,6 +10,7 @@ Contract (ml_spec.md "Interface contract with teammate"):
 from typing import Any
 
 from ml.data import get_connection
+from ml.dates import normalize_range
 
 MAX_LIMIT = 1000
 DEFAULT_LIMIT = 200
@@ -43,12 +44,14 @@ def validate_scope(scope: dict) -> tuple[dict, list[str]]:
         clean["role"] = role
 
     if "date_range" in scope:
-        dr = scope["date_range"]
-        if (not isinstance(dr, (list, tuple)) or len(dr) != 2
-                or not all(isinstance(x, str) for x in dr)):
-            errors.append("date_range must be a [start, end] pair of ISO date strings")
+        # Normalized to the stored VARCHAR format here, once, so `build_where` can compare
+        # directly. Passing a caller's ISO date straight into SQL matched zero rows and
+        # reported no error - see ml/dates.py.
+        normalized, err = normalize_range(scope["date_range"])
+        if err:
+            errors.append(f"date_range: {err}")
         else:
-            clean["date_range"] = list(dr)
+            clean["date_range"] = normalized
 
     for key in ("min_amount", "max_amount"):
         if key in scope:
@@ -81,7 +84,10 @@ def validate_scope(scope: dict) -> tuple[dict, list[str]]:
         else:
             clean["limit"] = min(val, MAX_LIMIT)
 
-    if not clean.get("account_id") and not clean.get("date_range"):
+    # Keyed off what was supplied, not what survived validation: a malformed date_range
+    # already reports why it was rejected, and adding "you must supply a date_range" on top
+    # of that reads as if it were missing entirely.
+    if "account_id" not in scope and "date_range" not in scope:
         errors.append("scope must include at least account_id or date_range")
 
     return clean, errors

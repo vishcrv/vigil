@@ -22,6 +22,7 @@ Anything failing either rule returns a structured error rather than executing.
 from typing import Any
 
 from ml.data import get_connection
+from ml.dates import normalize_bound, normalize_prefix, normalize_range
 
 MAX_LIMIT = 1000
 DEFAULT_LIMIT = 50
@@ -120,6 +121,31 @@ def _resolve_column(source: str, name: Any, errors: list[str], role: str) -> str
     return table[name]
 
 
+def _normalize_ts(op: str, value: Any) -> tuple[Any, str | None]:
+    """Rewrite a timestamp filter value into the stored `YYYY/MM/DD HH:MM` format.
+
+    Handles every op except `=`/`!=`, which the caller turns into a day range instead.
+    """
+    if op in COMPARISON_OPS:
+        return normalize_bound(value, upper=op in ("<", "<="))
+    if op == "between":
+        return normalize_range(value)
+    if op == "in":
+        if not isinstance(value, list) or not value:
+            return None, "must be a non-empty list for op 'in'"
+        bounds = []
+        for entry in value:
+            bound, err = normalize_bound(entry)
+            if err:
+                return None, err
+            bounds.append(bound)
+        return bounds, None
+    if op == "contains":
+        return normalize_prefix(value)
+    # is_null / not_null ignore the value entirely; an unknown op is reported downstream.
+    return value, None
+
+
 def _build_filters(source: str, raw: Any, errors: list[str]) -> tuple[str, list, list[dict]]:
     """Translate the filter list into a parameterized WHERE clause.
 
@@ -145,6 +171,27 @@ def _build_filters(source: str, raw: Any, errors: list[str]) -> tuple[str, list,
             continue
         op = item.get("op", "=")
         value = item.get("value")
+
+        # `Timestamp` is a lexicographically-compared VARCHAR, so a caller's ISO date has to
+        # be rewritten into the stored format before it is bound - otherwise it matches
+        # nothing and reports success. See ml/dates.py.
+        if item.get("column") == "timestamp" and source == "transactions":
+            if op in ("=", "!="):
+                # A bare date means the whole day, not the single instant at midnight, so
+                # equality on a date becomes a range over it.
+                pair, err = normalize_range([value, value])
+                if err:
+                    errors.append(f"filter[{i}].value: {err}")
+                    continue
+                clauses.append(f"{col} {'NOT ' if op == '!=' else ''}BETWEEN ? AND ?")
+                params.extend(pair)
+                normalized.append({"column": "timestamp", "op": op, "value": value})
+                continue
+
+            value, err = _normalize_ts(op, value)
+            if err:
+                errors.append(f"filter[{i}].value: {err}")
+                continue
 
         if op in COMPARISON_OPS:
             clauses.append(f"{col} {COMPARISON_OPS[op]} ?")
@@ -182,7 +229,9 @@ def _build_filters(source: str, raw: Any, errors: list[str]) -> tuple[str, list,
                 f"{', '.join(sorted(set(COMPARISON_OPS) | {'in', 'between', 'contains', 'is_null', 'not_null'}))}"
             )
             continue
-        normalized.append({"column": item.get("column"), "op": op, "value": value})
+        # Echoes what the caller asked for, not the rewritten bound - the rewritten form is
+        # visible in `sql_parameters` for anyone checking what actually ran.
+        normalized.append({"column": item.get("column"), "op": op, "value": item.get("value")})
 
     return (" AND ".join(clauses) if clauses else "TRUE"), params, normalized
 

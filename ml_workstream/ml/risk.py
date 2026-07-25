@@ -150,6 +150,16 @@ def risk(anomaly_result: dict, context: dict | None = None) -> dict:
         return {"error": "anomaly_result must be a dict"}
     if context is not None and not isinstance(context, dict):
         return {"error": "context must be a dict when provided"}
+    # A dict that is not an anomaly result would otherwise fall through to the "nothing
+    # matched" branch and be reported as LOW / MONITOR - i.e. a caller who passed the wrong
+    # object gets told the account is clean. Require the one key every success path sets.
+    if "error" not in anomaly_result and "row_count_scored" not in anomaly_result:
+        return {
+            "error": "anomaly_result does not look like an anomaly() result "
+                     "(no 'row_count_scored' key)",
+            "risk_level": None,
+            "escalation_action": None,
+        }
     if "error" in anomaly_result:
         # Propagate rather than scoring a failed detection as LOW risk, which would read as
         # "we checked and it is fine" when nothing was actually checked.
@@ -241,6 +251,10 @@ def risk(anomaly_result: dict, context: dict | None = None) -> dict:
                 "rules_fired": rule_breakdown,
                 "counterparty_rules": counterparty_breakdown,
                 "rows_scored": rows_scored,
+                # Carried through so a judge reading the flag can see the score covers the
+                # most recent slice of a larger scope, not all of it.
+                "rows_matched": anomaly_result.get("rows_matched", rows_scored),
+                "scope_truncated": bool(anomaly_result.get("truncated", False)),
                 # Descriptive only - see _flag_fractions. Phase 6 quotes these.
                 "row_flags": {k: round(v, 4) for k, v in _flag_fractions(top_rows).items()},
             },
