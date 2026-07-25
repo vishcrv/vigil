@@ -198,3 +198,79 @@ Minimum, matching `spec.md`'s stated coverage target:
    `data/HI-Small_Rule_Hits.parquet`), joined at query time. Multi-hop motifs over 1,015,736 edges
    are too slow per-call, and a cycle reaching outside the caller's scope would be invisible to a
    scope-local pass — exactly the multi-hop structure these rules exist to catch.
+
+### Post-review decisions (audit of the five shipped tools)
+
+7. **Caller dates are normalized, never passed through** (`ml/dates.py`). `Timestamp` is a
+   VARCHAR in `YYYY/MM/DD HH:MM` form, compared lexicographically, and `/` sorts above `-` —
+   so an ISO-8601 bound from the agent matched **zero rows and returned success**: `anomaly`
+   scored nothing and `risk` reported LOW/MONITOR on an account it had never looked at. Every
+   bound is now rewritten to the stored format, a bare date widens to cover its whole day
+   (`00:00` lower, `23:59` upper), and anything unparseable is a structured error rather than
+   an empty result. **Tell teammate: the tool schemas accept either separator; no date
+   formatting is required on their side.**
+8. **Truncation is reported, not silent.** `anomaly` scores at most `MAX_SCORE_ROWS` (5,000)
+   newest rows and now returns `rows_matched` and `truncated` alongside `row_count_scored`;
+   `risk` carries them into `contributing_signals` so a flag can say its score covers part of
+   a larger scope.
+9. **`risk` rejects non-anomaly input.** A dict without `row_count_scored` used to fall through
+   to the "nothing matched" branch and come back LOW/MONITOR — an unexamined account reported
+   as clean. Same failure class as 7, so it is closed the same way.
+10. **Detectors are blended by measured lift, not equally.** `metadata.json` now carries
+    `method_weights` (Isolation Forest 0.64, LOF 0.30, z-score 0.05), derived from each
+    method's average-precision lift over the base rate. Under the previous unweighted mean,
+    LOF at 1.6x lift moved the headline as much as the forest at 2.3x. z-score is now
+    evaluated against labels too (ROC-AUC 0.536 — near chance, hence its weight).
+11. **Reported detector metrics are leak-corrected.** `payment_format_risk` is a target
+    encoding computed over the whole dataset, so the held-out split carried an encoding that
+    had seen its own labels. `metadata.json` now records `metrics_leak_corrected`, re-deriving
+    that encoding from the train split alone: AP 0.00214 → 0.00209. Small, but it is the
+    number to quote.
+12. **Rule weights are derived, not hand-banded** (`RULE_STATS` → `RULE_WEIGHTS` in
+    `ml/risk.py`): Wilson lower bound on each rule's observed precision, log-scaled in lift,
+    normalized so the best-evidenced rule is 1.0. The old band table let BIPARTITE (6.7%
+    precision on **15** accounts) outrank FAN-OUT (5.0% on **1,736**). After shrinkage:
+    SCATTER-GATHER 1.0, GATHER-SCATTER 0.81, FAN-OUT 0.35, STACK 0.24, CYCLE 0.20, RANDOM
+    0.16, BIPARTITE 0.10, FAN-IN 0.01. RANDOM alone no longer reaches MEDIUM.
+13. **One enriched Parquet, not two.** `HI-Small_Agent_Ready.parquet` was a byte-identical
+    352 MB copy of `HI-Small_Enriched.parquet` — Phase 3 defines no extra precomputed columns,
+    so its real deliverable is the `feature_eng` tool. `scripts/enrich.py` writes only
+    `HI-Small_Enriched.parquet`. **Divergence from `spec.md`, which names both files as
+    deliverables — `spec.md` needs a one-line correction (it wins on conflicts, so fix it
+    there rather than reinstating the copy).**
+14. **Repeat-query caching** (`ml/cache.py`): `eda`, `feature_eng` and `anomaly` are memoized
+    on JSON-canonicalized arguments, results deep-copied on the way out so a caller mutating
+    one cannot poison the next. A repeated `anomaly` call goes 1.96s → ~0s. `risk` and
+    `explain` are deliberately uncached — their arguments are whole result dicts, so building
+    the key costs more than recomputing.
+
+---
+
+## Hand-off to teammate — `ml/tools.py`
+
+The signatures ml_spec said to lock early are now a module, so the loop does not need to know
+anything about this workstream's internals:
+
+```python
+from ml.tools import TOOL_SCHEMAS, dispatch, FLAGS_COLUMN_MAP
+
+# TOOL_SCHEMAS: list of {name, description, input_schema} in plain JSON Schema — what
+#   Anthropic tool_use, OpenAI/Groq function-calling and Gemini all consume, modulo a
+#   wrapper key each. No SDK is imported anywhere in this workstream.
+result = dispatch(tool_name, tool_args)   # always a dict, never raises
+```
+
+`dispatch` returns a structured error for an unknown tool name, a non-object argument payload,
+or an argument the schema does not declare (a hallucinated argument must not be silently
+dropped — the query that runs would not be the one the model asked for).
+
+**`flags` row assembly.** `FLAGS_COLUMN_MAP` maps each `flags` column to the `risk()` key that
+fills it. Three things worth stating outright:
+- `explanation` is **not** in the risk result — call `explain(risk_result)` and read
+  `["explanation"]`.
+- `transaction_id` is **TEXT**, not an integer: the Kaggle data has no transaction key
+  (`phase1.md` §9), so it is a deterministic `tx_`-prefixed hash of the identifying tuple.
+- `risk_level` is TEXT, one of four values (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`).
+- `risk()` also returns `risk_score` (the blended 0-1 figure) and `contributing_signals`, and
+  the current `flags` schema has no column for either. `risk_score` is the right sort key for
+  the flagged-items table — either add a column or sort by `risk_level` then `anomaly_score`.
