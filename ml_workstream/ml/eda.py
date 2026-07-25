@@ -21,6 +21,7 @@ Anything failing either rule returns a structured error rather than executing.
 """
 from typing import Any
 
+from ml.cache import cached_tool
 from ml.data import get_connection
 from ml.dates import normalize_bound, normalize_prefix, normalize_range
 
@@ -249,6 +250,7 @@ def _limit(spec: dict, errors: list[str]) -> int:
     return min(raw, MAX_LIMIT)
 
 
+@cached_tool()
 def eda(query_spec: dict) -> dict:
     if not isinstance(query_spec, dict):
         return {"error": "query_spec must be a dict"}

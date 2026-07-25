@@ -9,6 +9,7 @@ Contract (ml_spec.md "Interface contract with teammate"):
 """
 from typing import Any
 
+from ml.cache import cached_tool
 from ml.data import get_connection
 from ml.dates import normalize_range
 
@@ -129,6 +130,7 @@ def build_where(scope: dict) -> tuple[str, list]:
     return where_sql, params
 
 
+@cached_tool()
 def feature_eng(scope: dict) -> dict:
     clean_scope, errors = validate_scope(scope)
     if errors:

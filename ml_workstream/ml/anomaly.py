@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 
+from ml.cache import cached_tool
 from ml.data import ENRICHED_PATH, get_connection
 from ml.feature_eng import build_where, validate_scope
 from ml.features import FEATURE_COLUMNS, FEATURE_SQL
@@ -98,6 +99,7 @@ def _fetch_rule_hits(con, accounts: list[str]) -> list[dict]:
     ]
 
 
+@cached_tool()
 def anomaly(scope: dict, method: str = "all") -> dict:
     clean_scope, errors = validate_scope(scope)
     if method not in METHODS + ("all",):

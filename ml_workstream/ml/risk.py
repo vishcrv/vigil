@@ -12,21 +12,67 @@ here is the whole reason Phase 4 kept the signals separate instead of blending t
 """
 from typing import Any
 
-# --- Rule weights, from the measured lift table in phase4.md §3 ---------------------------
-# Base rate is 0.75% of accounts, so "lift" is precision / 0.0075. Weights are assigned by
-# band rather than by a formula on lift, because lift alone is noisy at low hit counts
-# (BIPARTITE's 8.9x rests on 15 accounts) and because what matters downstream is the coarse
-# question "is this rule evidence, a hint, or noise".
-RULE_WEIGHTS: dict[str, float] = {
-    "SCATTER-GATHER": 1.00,   # 100% precision, 133x lift  - strongest available evidence
-    "GATHER-SCATTER": 0.85,   #  52% precision,  70x lift
-    "RANDOM":         0.35,   # 8.7% precision, 11.6x lift
-    "BIPARTITE":      0.30,   # 6.7% precision,  8.9x lift (only 15 accounts - thin)
-    "FAN-OUT":        0.25,   # 5.0% precision,  6.7x lift
-    "CYCLE":          0.15,   # 2.8% precision,  3.7x lift
-    "STACK":          0.15,   # 2.7% precision,  3.6x lift (best recall, weak precision)
-    "FAN-IN":         0.05,   # 1.1% precision,  1.5x lift - near chance, deliberately minimal
+# --- Rule weights, derived from the measured table in phase4.md §3 ------------------------
+# (accounts hit, precision) per rule. Both numbers matter: the hit count is what says how much
+# of the precision to believe. BIPARTITE's headline 6.7% rests on 15 accounts and STACK's 2.7%
+# on 8,858, and an earlier hand-banded weight table treated those as comparable evidence.
+RULE_STATS: dict[str, tuple[int, float]] = {
+    "SCATTER-GATHER": (306, 1.000),
+    "GATHER-SCATTER": (46, 0.522),
+    "RANDOM": (12, 0.087),
+    "BIPARTITE": (15, 0.067),
+    "FAN-OUT": (1736, 0.050),
+    "CYCLE": (1249, 0.028),
+    "STACK": (8858, 0.027),
+    "FAN-IN": (3050, 0.011),
 }
+
+# phase4.md §3: 3,170 implicated accounts of 422,726 with a non-self-loop edge.
+ACCOUNT_BASE_RATE = 3170 / 422726
+
+# 95% two-sided.
+_WILSON_Z = 1.96
+
+
+def _wilson_lower_bound(hits: int, precision: float, z: float = _WILSON_Z) -> float:
+    """Lower bound of the Wilson score interval for an observed precision.
+
+    Shrinks a rule's credit toward zero in proportion to how little was measured, so a rule
+    seen 15 times cannot outrank one seen 1,736 times on the strength of a noisier point
+    estimate.
+    """
+    if hits <= 0:
+        return 0.0
+    successes = precision
+    denominator = 1.0 + z * z / hits
+    centre = successes + z * z / (2 * hits)
+    margin = z * ((successes * (1 - successes) / hits + z * z / (4 * hits * hits)) ** 0.5)
+    return max((centre - margin) / denominator, 0.0)
+
+
+def _derive_rule_weights() -> dict[str, float]:
+    """Turn (hits, precision) into a [0,1] weight per rule.
+
+    Log-scaled in lift rather than linear: linear in lift would give SCATTER-GATHER's 130x
+    weight 1.0 and collapse every other rule to under 0.05, which throws away the ordering
+    among the mid-tier rules that a triage queue actually needs. Normalized so the
+    best-evidenced rule is exactly 1.0 — the scale is relative to the best rule available, not
+    to an absolute notion of certainty.
+    """
+    import math
+
+    lifts = {
+        rule: _wilson_lower_bound(hits, precision) / ACCOUNT_BASE_RATE
+        for rule, (hits, precision) in RULE_STATS.items()
+    }
+    logs = {rule: math.log(lift) if lift > 1.0 else 0.0 for rule, lift in lifts.items()}
+    best = max(logs.values())
+    if best <= 0:
+        return {rule: 0.0 for rule in RULE_STATS}
+    return {rule: round(value / best, 3) for rule, value in logs.items()}
+
+
+RULE_WEIGHTS: dict[str, float] = _derive_rule_weights()
 
 # Firing at all is most of a rule's evidentiary value; the rule's own confidence (how far past
 # threshold it went) supplies the rest. Without this floor, a rule that fires just over its

@@ -12,6 +12,7 @@ from ml.risk import (
     DETECTOR_WEIGHT,
     ESCALATION_ACTIONS,
     RISK_LEVELS,
+    RULE_STATS,
     RULE_WEIGHTS,
     risk,
 )
@@ -58,9 +59,11 @@ def _row(**overrides) -> dict:
 
 @pytest.mark.parametrize("rule,confidence,expected", [
     ("SCATTER-GATHER", 1.0, "CRITICAL"),   # 100%-precision rule at full confidence
-    ("GATHER-SCATTER", 1.0, "CRITICAL"),   # 0.85 weight clears the 0.75 CRITICAL floor
+    ("GATHER-SCATTER", 1.0, "CRITICAL"),   # ~0.8 weight clears the 0.75 CRITICAL floor
     ("SCATTER-GATHER", 0.0, "HIGH"),       # same rule barely over threshold -> base credit only
-    ("RANDOM", 1.0, "MEDIUM"),
+    # RANDOM's 8.7% precision was measured on 12 accounts; once shrunk for that sample size
+    # it is a hint, not grounds for escalating on its own.
+    ("RANDOM", 1.0, "LOW"),
     ("FAN-IN", 1.0, "LOW"),                # near-chance rule must not escalate on its own
 ])
 def test_rule_alone_maps_to_expected_level(rule, confidence, expected):
@@ -99,7 +102,9 @@ def test_strongest_rule_wins_rather_than_hits_accumulating():
     two_weak = risk(make_anomaly(rules=[("CYCLE", 1.0), ("STACK", 1.0)]))
     one_strong = risk(make_anomaly(rules=[("SCATTER-GATHER", 0.0)]))
     assert two_weak["risk_score"] < one_strong["risk_score"]
-    assert two_weak["risk_score"] == pytest.approx(RULE_WEIGHTS["CYCLE"])
+    assert two_weak["risk_score"] == pytest.approx(
+        max(RULE_WEIGHTS["CYCLE"], RULE_WEIGHTS["STACK"])
+    )
 
 
 def test_pattern_detected_reports_the_highest_weighted_rule():
@@ -282,3 +287,38 @@ def test_scopeless_query_still_uses_every_hit():
         {"account": "ANY1", "rule": "SCATTER-GATHER", "score": 1.0, "evidence": {}},
     ]
     assert risk(payload)["pattern_detected"] == "SCATTER-GATHER"
+
+
+# --- weight derivation --------------------------------------------------------------------
+
+def test_every_rule_has_measured_stats_behind_its_weight():
+    """No hand-picked weights: each one must trace to a (hits, precision) pair from
+    phase4.md §3, so a judge asking "why 0.8?" gets a measurement, not a preference."""
+    assert set(RULE_WEIGHTS) == set(RULE_STATS)
+    for hits, precision in RULE_STATS.values():
+        assert hits > 0
+        assert 0.0 <= precision <= 1.0
+
+
+def test_weights_are_bounded_and_topped_by_the_best_evidenced_rule():
+    assert all(0.0 <= w <= 1.0 for w in RULE_WEIGHTS.values())
+    assert RULE_WEIGHTS["SCATTER-GATHER"] == 1.0
+
+
+def test_thin_evidence_is_shrunk_below_well_measured_evidence():
+    """BIPARTITE's raw precision (6.7%) beats FAN-OUT's (5.0%), but rests on 15 accounts
+    against 1,736 — after shrinkage the better-measured rule must rank higher."""
+    assert RULE_STATS["BIPARTITE"][1] > RULE_STATS["FAN-OUT"][1]
+    assert RULE_WEIGHTS["BIPARTITE"] < RULE_WEIGHTS["FAN-OUT"]
+
+
+def test_near_chance_rule_is_effectively_zero():
+    assert RULE_WEIGHTS["FAN-IN"] < 0.05
+
+
+def test_wilson_bound_shrinks_harder_on_smaller_samples():
+    from ml.risk import _wilson_lower_bound
+
+    assert _wilson_lower_bound(10, 0.5) < _wilson_lower_bound(1000, 0.5)
+    assert _wilson_lower_bound(0, 1.0) == 0.0
+    assert _wilson_lower_bound(1000, 0.5) < 0.5
