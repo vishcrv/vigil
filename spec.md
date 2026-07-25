@@ -146,8 +146,8 @@ POST /api/v1/analyze  →  parse LLM_PROVIDER + matching key from .env  →  get
 ### Bulk data: flat files, not a database
 - Input: raw Kaggle CSV (`HI-Small_Trans.csv`, `HI-Small_Patterns.txt`) — already downloaded for dev,
   gitignored, not committed
-- Working data: `HI-Small_Enriched.parquet`, `HI-Small_Agent_Ready.parquet` — produced by a one-time
-  enrichment script, columnar, loaded into memory at FastAPI startup
+- Working data: `HI-Small_Enriched.parquet` — produced by a one-time enrichment script, columnar,
+  loaded into memory at FastAPI startup
 - Queried via DuckDB directly over the Parquet file (no separate DB process)
 
 Target enrichment column list:
