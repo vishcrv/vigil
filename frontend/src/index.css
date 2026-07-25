@@ -38,6 +38,8 @@
   --ring: oklch(52% 0.19 260 / 45%);
 
   /* Risk semantics */
+  --risk-critical: oklch(40% 0.20 15);
+  --risk-critical-bg: oklch(94% 0.05 15);
   --risk-high: oklch(52% 0.21 25);
   --risk-high-bg: oklch(96% 0.03 25);
   --risk-medium: oklch(55% 0.16 60);
@@ -83,6 +85,8 @@
   --input: oklch(24% 0.005 258);
   --ring: oklch(68% 0.16 258 / 50%);
 
+  --risk-critical: oklch(62% 0.20 15);
+  --risk-critical-bg: oklch(34% 0.09 15);
   --risk-high: oklch(72% 0.17 22);
   --risk-high-bg: oklch(30% 0.06 25);
   --risk-medium: oklch(78% 0.14 70);
@@ -133,6 +137,8 @@ body {
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  --color-risk-critical: var(--risk-critical);
+  --color-risk-critical-bg: var(--risk-critical-bg);
   --color-risk-high: var(--risk-high);
   --color-risk-high-bg: var(--risk-high-bg);
   --color-risk-medium: var(--risk-medium);

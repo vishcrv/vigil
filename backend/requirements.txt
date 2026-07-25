@@ -5,6 +5,7 @@ python-dotenv
 pandas
 numpy
 scikit-learn
+joblib
 duckdb
 pyarrow
 anthropic

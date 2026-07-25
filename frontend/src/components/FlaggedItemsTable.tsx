@@ -20,6 +20,10 @@ const money = new Intl.NumberFormat('en-US', {
 })
 
 const RISK_STYLE: Record<string, { icon: typeof AlertTriangle; className: string }> = {
+  // CRITICAL is the top tier of the ML risk scale (backend/docs/ml_spec.md decision 1) and the
+  // only level that maps to REPORT. Without an entry here it fell through to the neutral grey
+  // fallback, rendering the most severe flag as if its level were unrecognised.
+  CRITICAL: { icon: AlertTriangle, className: 'bg-risk-critical-bg text-risk-critical' },
   HIGH: { icon: AlertTriangle, className: 'bg-risk-high-bg text-risk-high' },
   MEDIUM: { icon: Info, className: 'bg-risk-medium-bg text-risk-medium' },
   LOW: { icon: ShieldCheck, className: 'bg-risk-low-bg text-risk-low' },

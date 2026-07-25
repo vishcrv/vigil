@@ -64,7 +64,11 @@ export default function Sidebar({
 
   const results = entries.map((e) => e.result).filter((r) => r !== null)
   const flagged = results.flatMap((r) => r.flagged_items)
-  const highRisk = flagged.filter((f) => f.risk_level === 'HIGH').length
+  // HIGH *and* CRITICAL: both are "high risk" to an analyst, and counting only HIGH left the
+  // most severe flags out of the tally entirely.
+  const highRisk = flagged.filter(
+    (f) => f.risk_level === 'HIGH' || f.risk_level === 'CRITICAL',
+  ).length
 
   return (
     <aside

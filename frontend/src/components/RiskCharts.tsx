@@ -6,6 +6,7 @@ import { useTheme } from '../theme'
 // equivalents of the oklch tokens defined in index.css - keep in sync.
 const PALETTE = {
   light: {
+    critical: '#991B1B',
     high: '#DC2626',
     medium: '#C2760A',
     low: '#16803D',
@@ -14,6 +15,7 @@ const PALETTE = {
     text: '#64748B',
   },
   dark: {
+    critical: '#E4645C',
     high: '#F0938B',
     medium: '#E8C170',
     low: '#8FDBAA',
@@ -52,6 +54,7 @@ export default function RiskCharts({ items }: { items: FlaggedItem[] }) {
   const byRisk = countBy(items, (i) => i.risk_level)
   const byDay = new Map([...countBy(items, (i) => i.timestamp.slice(0, 10))].sort())
   const riskColorMap: Record<string, string> = {
+    CRITICAL: colors.critical,
     HIGH: colors.high,
     MEDIUM: colors.medium,
     LOW: colors.low,
