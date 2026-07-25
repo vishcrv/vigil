@@ -1,0 +1,235 @@
+"""
+Phase 5 risk-classification tests, per ml_spec.md "Testing": known anomaly-score + rule-hit
+combinations mapped to expected risk_level / escalation_action.
+
+The cases that matter most are the boundaries the weighting exists to enforce — a weak rule
+must not reach the same level as a strong one, and the detectors must not be able to reach
+CRITICAL on their own.
+"""
+import pytest
+
+from ml.risk import (
+    DETECTOR_WEIGHT,
+    ESCALATION_ACTIONS,
+    RISK_LEVELS,
+    RULE_WEIGHTS,
+    risk,
+)
+
+
+def make_anomaly(anomaly_score=0.0, rules=(), rows=1, top_rows=None, scope=None) -> dict:
+    """Minimal Phase 4-shaped result. `rules` is an iterable of (name, confidence)."""
+    return {
+        "scope": scope or {"account_id": "ACC1"},
+        "method": "all",
+        "row_count_scored": rows,
+        "anomaly_score": anomaly_score,
+        "mean_anomaly_score": anomaly_score,
+        "method_scores": {},
+        "rule_hits": [
+            {"account": "ACC1", "rule": name, "score": conf, "evidence": {}}
+            for name, conf in rules
+        ],
+        "rule_names": sorted({name for name, _ in rules}),
+        "top_rows": top_rows if top_rows is not None else [_row()],
+    }
+
+
+def _row(**overrides) -> dict:
+    row = {
+        "Timestamp": "2022/09/10 18:21",
+        "From Account": "ACC1",
+        "To Account": "ACC2",
+        "Amount Received": 1000.0,
+        "Payment Format": "ACH",
+        "aml_pattern": "NORMAL",
+        "is_laundering": False,
+        "is_suspicious": False,
+        "is_self_loop": False,
+        "payment_format_risk": 0.0075,
+        "anomaly_score": 0.5,
+        "method_scores": {},
+    }
+    row.update(overrides)
+    return row
+
+
+# --- level boundaries ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("rule,confidence,expected", [
+    ("SCATTER-GATHER", 1.0, "CRITICAL"),   # 100%-precision rule at full confidence
+    ("GATHER-SCATTER", 1.0, "CRITICAL"),   # 0.85 weight clears the 0.75 CRITICAL floor
+    ("SCATTER-GATHER", 0.0, "HIGH"),       # same rule barely over threshold -> base credit only
+    ("RANDOM", 1.0, "MEDIUM"),
+    ("FAN-IN", 1.0, "LOW"),                # near-chance rule must not escalate on its own
+])
+def test_rule_alone_maps_to_expected_level(rule, confidence, expected):
+    result = risk(make_anomaly(anomaly_score=0.0, rules=[(rule, confidence)]))
+    assert result["risk_level"] == expected
+    assert result["pattern_detected"] == rule
+
+
+def test_detector_alone_cannot_reach_critical():
+    """A perfect detector score with no rule hit tops out at DETECTOR_WEIGHT by construction —
+    the detectors measured 2.3x lift against rules reaching 133x, so they may raise a score
+    but never carry one alone."""
+    result = risk(make_anomaly(anomaly_score=1.0))
+    assert result["risk_score"] == pytest.approx(DETECTOR_WEIGHT)
+    assert result["risk_level"] == "MEDIUM"
+    assert result["pattern_detected"] is None
+
+
+def test_no_signal_is_low_and_monitor():
+    result = risk(make_anomaly(anomaly_score=0.0))
+    assert result["risk_level"] == "LOW"
+    assert result["escalation_action"] == "MONITOR"
+
+
+def test_detector_raises_level_when_combined_with_a_rule():
+    without = risk(make_anomaly(anomaly_score=0.0, rules=[("FAN-OUT", 0.5)]))
+    with_detector = risk(make_anomaly(anomaly_score=1.0, rules=[("FAN-OUT", 0.5)]))
+    assert with_detector["risk_score"] > without["risk_score"]
+
+
+# --- weighting invariants -----------------------------------------------------------------
+
+def test_strongest_rule_wins_rather_than_hits_accumulating():
+    """Two low-precision rules firing together must not out-score one high-precision rule;
+    summing contributions would let a pile of weak hits manufacture a CRITICAL."""
+    two_weak = risk(make_anomaly(rules=[("CYCLE", 1.0), ("STACK", 1.0)]))
+    one_strong = risk(make_anomaly(rules=[("SCATTER-GATHER", 0.0)]))
+    assert two_weak["risk_score"] < one_strong["risk_score"]
+    assert two_weak["risk_score"] == pytest.approx(RULE_WEIGHTS["CYCLE"])
+
+
+def test_pattern_detected_reports_the_highest_weighted_rule():
+    result = risk(make_anomaly(rules=[("FAN-IN", 1.0), ("SCATTER-GATHER", 0.5), ("STACK", 1.0)]))
+    assert result["pattern_detected"] == "SCATTER-GATHER"
+    assert [r["rule"] for r in result["contributing_signals"]["rules_fired"]][0] == "SCATTER-GATHER"
+
+
+def test_pattern_detected_never_echoes_the_ground_truth_label():
+    """`aml_pattern` on a row is pattern-file ground truth. pattern_detected must come from
+    the rule engine only — echoing the label would leak it into the agent's own output."""
+    rows = [_row(aml_pattern="CYCLE", is_suspicious=True, is_laundering=True)]
+    result = risk(make_anomaly(anomaly_score=0.9, rules=(), top_rows=rows))
+    assert result["pattern_detected"] is None
+
+
+def test_unknown_rule_names_are_ignored_not_crashed_on():
+    result = risk(make_anomaly(rules=[("NOT-A-REAL-MOTIF", 1.0)]))
+    assert result["risk_level"] == "LOW"
+    assert result["pattern_detected"] is None
+
+
+# --- benign-profile correction (phase4.md §7) ---------------------------------------------
+
+def test_self_loop_zero_risk_format_rows_damp_the_detector():
+    benign = [_row(is_self_loop=True, payment_format_risk=0.0) for _ in range(4)]
+    damped = risk(make_anomaly(anomaly_score=1.0, top_rows=benign))
+    normal = risk(make_anomaly(anomaly_score=1.0))
+    assert damped["risk_score"] < normal["risk_score"]
+    assert damped["contributing_signals"]["benign_profile_fraction"] == 1.0
+    assert damped["risk_level"] == "LOW"
+
+
+def test_self_loop_in_a_risky_format_is_not_damped():
+    rows = [_row(is_self_loop=True, payment_format_risk=0.0075)]
+    result = risk(make_anomaly(anomaly_score=1.0, top_rows=rows))
+    assert result["contributing_signals"]["benign_profile_fraction"] == 0.0
+
+
+def test_damping_does_not_suppress_a_rule_hit():
+    """The correction targets detector false positives on routine self-transfers; a fired
+    rule is separate evidence and must survive it."""
+    benign = [_row(is_self_loop=True, payment_format_risk=0.0)]
+    result = risk(make_anomaly(anomaly_score=1.0, rules=[("SCATTER-GATHER", 1.0)],
+                               top_rows=benign))
+    assert result["risk_level"] == "CRITICAL"
+
+
+# --- flags-row contract -------------------------------------------------------------------
+
+FLAGS_FIELDS = [
+    "risk_level", "pattern_detected", "anomaly_score",
+    "escalation_action", "customer_id", "transaction_id",
+]
+
+
+def test_output_carries_every_flags_column():
+    result = risk(make_anomaly(anomaly_score=0.5, rules=[("FAN-OUT", 0.5)]))
+    for field in FLAGS_FIELDS:
+        assert field in result, field
+
+
+@pytest.mark.parametrize("level", RISK_LEVELS)
+def test_every_risk_level_has_an_escalation_action(level):
+    assert ESCALATION_ACTIONS[level] in ("MONITOR", "REVIEW", "REPORT")
+
+
+def test_escalation_action_matches_the_assigned_level():
+    result = risk(make_anomaly(rules=[("SCATTER-GATHER", 1.0)]))
+    assert result["risk_level"] == "CRITICAL"
+    assert result["escalation_action"] == "REPORT"
+
+
+def test_transaction_id_is_stable_across_calls():
+    a = risk(make_anomaly(anomaly_score=0.5))
+    b = risk(make_anomaly(anomaly_score=0.5))
+    assert a["transaction_id"] == b["transaction_id"]
+    assert a["transaction_id"].startswith("tx_")
+
+
+def test_transaction_id_changes_with_the_transaction():
+    a = risk(make_anomaly(anomaly_score=0.5))
+    b = risk(make_anomaly(anomaly_score=0.5, top_rows=[_row(**{"Amount Received": 2000.0})]))
+    assert a["transaction_id"] != b["transaction_id"]
+
+
+def test_customer_id_falls_back_from_context_to_scope():
+    from_scope = risk(make_anomaly(scope={"account_id": "FROM_SCOPE"}))
+    assert from_scope["customer_id"] == "FROM_SCOPE"
+    from_context = risk(make_anomaly(scope={"account_id": "FROM_SCOPE"}),
+                        {"customer_id": "FROM_CONTEXT"})
+    assert from_context["customer_id"] == "FROM_CONTEXT"
+
+
+# --- error handling -----------------------------------------------------------------------
+
+def test_upstream_error_propagates_instead_of_scoring_low():
+    """A failed detection must not be reported as LOW risk — that reads as 'checked, fine'
+    when nothing was checked."""
+    result = risk({"error": "models not found", "scope": {}})
+    assert "error" in result
+    assert result["risk_level"] is None
+    assert result["escalation_action"] is None
+
+
+@pytest.mark.parametrize("bad", [None, "string", 42, []])
+def test_non_dict_input_returns_structured_error(bad):
+    result = risk(bad)
+    assert "error" in result
+
+
+def test_bad_context_returns_structured_error():
+    assert "error" in risk(make_anomaly(), context="not-a-dict")
+
+
+def test_empty_scope_match_is_low_risk_with_a_note():
+    result = risk(make_anomaly(rows=0, top_rows=[]))
+    assert result["risk_level"] == "LOW"
+    assert result["escalation_action"] == "MONITOR"
+    assert "note" in result["contributing_signals"]
+
+
+def test_malformed_rule_hits_do_not_raise():
+    payload = make_anomaly()
+    payload["rule_hits"] = [None, "junk", {"rule": "FAN-OUT"}, {"rule": "STACK", "score": "x"}]
+    result = risk(payload)
+    assert result["risk_level"] in RISK_LEVELS
+
+
+@pytest.mark.parametrize("score", [-5.0, 0.0, 0.5, 1.0, 99.0])
+def test_risk_score_stays_within_unit_range(score):
+    result = risk(make_anomaly(anomaly_score=score, rules=[("SCATTER-GATHER", 1.0)]))
+    assert 0.0 <= result["risk_score"] <= 1.0

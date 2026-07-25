@@ -139,6 +139,12 @@ def anomaly(scope: dict, method: str = "all") -> dict:
             row["Amount Received"] = float(row["Amount Received"])
             row["is_laundering"] = bool(row["is_laundering"])
             row["is_suspicious"] = bool(row["is_suspicious"])
+            # Both already present via FEATURE_SQL, surfaced under their natural names so
+            # Phase 5 can apply the self-loop / zero-risk-format correction (phase4.md §7)
+            # without re-querying. Not added to _ID_COLUMNS — that would duplicate the
+            # column in the SELECT and give the frame two columns of the same name.
+            row["is_self_loop"] = bool(df.iloc[i]["is_self_loop_i"])
+            row["payment_format_risk"] = float(df.iloc[i]["payment_format_risk"])
             row["anomaly_score"] = round(float(combined[i]), 4)
             row["method_scores"] = {k: round(float(v[i]), 4) for k, v in per_row.items()}
             top_rows.append(row)
