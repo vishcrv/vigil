@@ -29,9 +29,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="vigil", lifespan=lifespan)
 
 # Local Vite dev server only; nothing is deployed (spec.md: Deploy = none). Regex over any
-# localhost port, not a fixed 5173: Vite silently shifts to 5174+ when 5173 is taken, and the
-# resulting failure is an opaque CORS error in the browser console rather than anything that
-# points at the port. Safe here precisely because nothing is deployed and there's no auth.
+# localhost port rather than pinning the frontend's port (5174, see frontend/vite.config.ts):
+# a mismatch here surfaces as an opaque browser CORS error that points nowhere near the port,
+# so it isn't worth the coupling. Safe precisely because nothing is deployed and there's no auth.
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",

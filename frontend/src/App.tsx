@@ -66,6 +66,32 @@ function Hero({
   )
 }
 
+function AgentResponse({ result }: { result: AgentResult }) {
+  // Not every query is an analysis. A greeting or a request for clarification comes back with
+  // no tools invoked and nothing flagged — rendering the decision-flow panel, a header-only
+  // table and two empty charts for that is noise. Show only what the run actually produced.
+  const ranTools = result.execution_summary.tools_invoked.length > 0
+  const hasFlags = result.flagged_items.length > 0
+
+  if (!ranTools) {
+    return <p className="text-[15px] leading-relaxed text-foreground/90">{result.summary}</p>
+  }
+
+  return (
+    <>
+      <ExecutionSummaryPanel narrative={result.summary} summary={result.execution_summary} />
+      {/* Aggregate queries answer in the summary without flagging individual rows; the table
+          and charts have nothing to plot in that case. */}
+      {hasFlags && (
+        <>
+          <FlaggedItemsTable items={result.flagged_items} />
+          <RiskCharts items={result.flagged_items} />
+        </>
+      )}
+    </>
+  )
+}
+
 export default function App() {
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -116,14 +142,7 @@ export default function App() {
                         </div>
                       </div>
                     ) : entry.result ? (
-                      <>
-                        <ExecutionSummaryPanel
-                          narrative={entry.result.summary}
-                          summary={entry.result.execution_summary}
-                        />
-                        <FlaggedItemsTable items={entry.result.flagged_items} />
-                        <RiskCharts items={entry.result.flagged_items} />
-                      </>
+                      <AgentResponse result={entry.result} />
                     ) : (
                       <ThinkingIndicator />
                     )}

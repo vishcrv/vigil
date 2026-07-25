@@ -5,7 +5,7 @@ import os
 from fastapi import APIRouter, HTTPException
 
 from agent.loop import tool_calling_loop
-from agent.providers import get_client
+from agent.providers import ProviderError, get_client
 from db import escalate_flag, get_connection, insert_flags, insert_query
 from schemas import AgentResult, AnalyzeRequest, EscalateRequest
 
@@ -15,7 +15,12 @@ router = APIRouter()
 @router.post("/analyze", response_model=AgentResult)
 def analyze(req: AnalyzeRequest) -> AgentResult:
     client = get_client(os.getenv("LLM_PROVIDER", "anthropic"))
-    result = tool_calling_loop(client, req.query)
+    try:
+        result = tool_calling_loop(client, req.query)
+    except ProviderError as e:
+        # 429 passes through as 429 so the UI can distinguish "slow down" from "broken";
+        # anything else upstream becomes a 502, since the failure isn't the caller's fault.
+        raise HTTPException(status_code=e.status if e.status == 429 else 502, detail=str(e)) from e
 
     # Persist the audit trail, then hand the assigned flag_ids back so the UI's
     # Escalate button has a row to reference.

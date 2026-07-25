@@ -3,7 +3,9 @@
 
 import type { AgentResult, EscalationAction } from './types'
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+// 127.0.0.1 rather than localhost, matching .env.example: uvicorn binds IPv4 by default, but
+// browsers resolve "localhost" to IPv6 ::1 first, which is refused before reaching the server.
+const BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
 
 /** FastAPI returns {detail: ...} on error; surface that rather than a bare status code. */
 async function post<T>(path: string, body: unknown): Promise<T> {

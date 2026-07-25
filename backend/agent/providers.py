@@ -24,12 +24,15 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 8000
 
-# Flash over Pro: same "several round trips per query, judges run this live" reasoning as the
-# Anthropic model choice above. The alias, not a pinned version: pinned gemini-2.5-flash 404s
-# ("no longer available to new users") and pinned gemini-2.0-flash/-lite both 429 with a hard
-# zero free-tier quota grant on fresh accounts. "-latest" resolves to whatever flash model the
-# account actually has working quota for - confirmed live, don't pin this back without re-testing.
-GEMINI_MODEL = "gemini-flash-latest"
+# Flash-lite, and the alias rather than a pinned version. Every part of this is load-bearing on
+# a free-tier key, so don't "tidy" it without re-testing against a real key:
+#   - pinned gemini-2.5-flash / -flash-lite    -> 404, "no longer available to new users"
+#   - pinned gemini-2.0-flash / -flash-lite    -> 429, limit: 0 (no grant at all on new accounts)
+#   - gemini-flash-latest (-> gemini-3.6-flash) -> works, but only 20 requests/DAY free tier, and
+#     one analyze() burns ~5 of them in tool-calling round trips = ~4 queries/day. Unusable.
+#   - gemini-flash-lite-latest                 -> works, separate + far larger daily bucket, and
+#     lower latency, which matters when the loop makes several sequential calls in a live demo.
+GEMINI_MODEL = "gemini-flash-lite-latest"
 
 KEY_VARS = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -42,6 +45,18 @@ class Reply(NamedTuple):
     text: str
     tool_calls: list  # [{"id": str, "name": str, "input": dict}]
     assistant_content: list  # append verbatim to messages as the assistant turn
+
+
+class ProviderError(RuntimeError):
+    """An upstream LLM API call failed. Keeps provider-specific SDK exceptions from leaking into
+    the routes, so `api/routes/agent.py` can map any provider's failure to one HTTP response.
+
+    `status` is the upstream HTTP status where there was one (429 for quota, etc.), else None.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def check_api_key(provider: str) -> None:
@@ -158,17 +173,31 @@ class GeminiClient:
         return contents
 
     def chat_with_tools(self, messages: list, tools: list, system: str) -> Reply:
+        from google.genai import errors as genai_errors
         from google.genai import types
 
-        response = self._client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=self._to_gemini_contents(messages),
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                tools=self._to_gemini_tools(tools),
-                max_output_tokens=MAX_TOKENS,
-            ),
-        )
+        try:
+            response = self._client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=self._to_gemini_contents(messages),
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    tools=self._to_gemini_tools(tools),
+                    max_output_tokens=MAX_TOKENS,
+                ),
+            )
+        except genai_errors.APIError as e:
+            # Quota exhaustion is a routine condition on a free-tier key, not a crash: one
+            # analyze() spends several requests, so a demo can hit the daily cap mid-session.
+            # Surface it as something the UI can render instead of an unhandled 500.
+            status = getattr(e, "code", None)
+            if status == 429:
+                raise ProviderError(
+                    f"{GEMINI_MODEL} free-tier quota exhausted. Wait for the quota window to "
+                    f"reset, or enable billing on the API key's project.",
+                    status=429,
+                ) from e
+            raise ProviderError(f"{GEMINI_MODEL} call failed: {e}", status=status) from e
 
         candidate_parts = response.candidates[0].content.parts if response.candidates else []
         text_chunks = []
