@@ -11,7 +11,9 @@ import pytest
 from ml.risk import (
     DETECTOR_WEIGHT,
     ESCALATION_ACTIONS,
+    RULE_BASE_CREDIT,
     RISK_LEVELS,
+    RISK_THRESHOLDS,
     RULE_STATS,
     RULE_WEIGHTS,
     risk,
@@ -59,7 +61,7 @@ def _row(**overrides) -> dict:
 
 @pytest.mark.parametrize("rule,confidence,expected", [
     ("SCATTER-GATHER", 1.0, "CRITICAL"),   # 100%-precision rule at full confidence
-    ("GATHER-SCATTER", 1.0, "CRITICAL"),   # ~0.8 weight clears the 0.75 CRITICAL floor
+    ("GATHER-SCATTER", 1.0, "CRITICAL"),   # ~0.8 weight clears the CRITICAL floor
     ("SCATTER-GATHER", 0.0, "HIGH"),       # same rule barely over threshold -> base credit only
     # RANDOM's 8.7% precision was measured on 12 accounts; once shrunk for that sample size
     # it is a hint, not grounds for escalating on its own.
@@ -75,10 +77,16 @@ def test_rule_alone_maps_to_expected_level(rule, confidence, expected):
 def test_detector_alone_cannot_reach_critical():
     """A perfect detector score with no rule hit tops out at DETECTOR_WEIGHT by construction —
     the detectors measured 2.3x lift against rules reaching 133x, so they may raise a score
-    but never carry one alone."""
+    but never carry one alone.
+
+    Asserts the ceiling, not the level it lands on: which tier DETECTOR_WEIGHT falls into is a
+    function of the tuned thresholds and moved from MEDIUM to HIGH when they were retuned. The
+    invariant that matters is that it is never CRITICAL.
+    """
     result = risk(make_anomaly(anomaly_score=1.0))
     assert result["risk_score"] == pytest.approx(DETECTOR_WEIGHT)
-    assert result["risk_level"] == "MEDIUM"
+    assert result["risk_level"] != "CRITICAL"
+    assert DETECTOR_WEIGHT < dict(RISK_THRESHOLDS)["CRITICAL"]
     assert result["pattern_detected"] is None
 
 
@@ -130,12 +138,18 @@ def test_unknown_rule_names_are_ignored_not_crashed_on():
 # --- benign-profile correction (phase4.md §7) ---------------------------------------------
 
 def test_self_loop_zero_risk_format_rows_damp_the_detector():
+    """Damping must pull the score down and, at full benign fraction, down a whole tier.
+
+    The absolute tier is not asserted: it depends on the tuned thresholds (this case was
+    LOW under the old floors and is MEDIUM under the current ones). What must hold is that
+    damping costs the account a level relative to the same score undamped.
+    """
     benign = [_row(is_self_loop=True, payment_format_risk=0.0) for _ in range(4)]
     damped = risk(make_anomaly(anomaly_score=1.0, top_rows=benign))
     normal = risk(make_anomaly(anomaly_score=1.0))
     assert damped["risk_score"] < normal["risk_score"]
     assert damped["contributing_signals"]["benign_profile_fraction"] == 1.0
-    assert damped["risk_level"] == "LOW"
+    assert RISK_LEVELS.index(damped["risk_level"]) > RISK_LEVELS.index(normal["risk_level"])
 
 
 def test_self_loop_in_a_risky_format_is_not_damped():
@@ -322,3 +336,58 @@ def test_wilson_bound_shrinks_harder_on_smaller_samples():
     assert _wilson_lower_bound(10, 0.5) < _wilson_lower_bound(1000, 0.5)
     assert _wilson_lower_bound(0, 1.0) == 0.0
     assert _wilson_lower_bound(1000, 0.5) < 0.5
+
+
+# --- blend parameterization ---------------------------------------------------------------
+
+def test_default_blend_matches_the_module_constants():
+    """DEFAULT_BLEND is what risk() uses when no blend is passed; if it drifts from the
+    constants, the tuning sweep would be optimizing something the product does not run."""
+    from ml.risk import BENIGN_DETECTOR_DAMPING, DEFAULT_BLEND
+
+    assert DEFAULT_BLEND["detector_weight"] == DETECTOR_WEIGHT
+    assert DEFAULT_BLEND["rule_base_credit"] == RULE_BASE_CREDIT
+    assert DEFAULT_BLEND["benign_damping"] == BENIGN_DETECTOR_DAMPING
+    assert DEFAULT_BLEND["thresholds"] == RISK_THRESHOLDS
+
+
+def test_passing_no_blend_is_identical_to_passing_the_default():
+    from ml.risk import DEFAULT_BLEND
+
+    payload = make_anomaly(anomaly_score=0.8, rules=[("FAN-OUT", 0.5)])
+    assert risk(payload) == risk(payload, blend=DEFAULT_BLEND)
+
+
+def test_blend_overrides_are_partial():
+    """A sweep varies one knob at a time; unspecified keys must keep their defaults rather
+    than becoming None."""
+    payload = make_anomaly(anomaly_score=1.0)
+    louder = risk(payload, blend={"detector_weight": 0.9})
+    assert louder["risk_score"] == pytest.approx(0.9)
+    assert louder["pattern_detected"] is None
+
+
+def test_custom_thresholds_change_the_assigned_level():
+    payload = make_anomaly(anomaly_score=1.0)
+    strict = risk(payload, blend={"thresholds": [("CRITICAL", 0.9), ("HIGH", 0.8),
+                                                 ("MEDIUM", 0.7), ("LOW", 0.0)]})
+    loose = risk(payload, blend={"thresholds": [("CRITICAL", 0.2), ("HIGH", 0.1),
+                                                ("MEDIUM", 0.05), ("LOW", 0.0)]})
+    assert strict["risk_level"] == "LOW"
+    assert loose["risk_level"] == "CRITICAL"
+
+
+def test_rule_base_credit_sets_the_floor_for_a_zero_confidence_hit():
+    payload = make_anomaly(rules=[("SCATTER-GATHER", 0.0)])
+    assert risk(payload, blend={"rule_base_credit": 0.25})["risk_score"] == pytest.approx(
+        0.25 * RULE_WEIGHTS["SCATTER-GATHER"]
+    )
+
+
+def test_blend_is_not_exposed_on_the_agent_tool_surface():
+    """The loop must not be able to retune the risk model mid-query."""
+    from ml.tools import TOOL_SCHEMAS, dispatch
+
+    schema = next(s for s in TOOL_SCHEMAS if s["name"] == "risk")
+    assert "blend" not in schema["input_schema"]["properties"]
+    assert "error" in dispatch("risk", {"anomaly_result": {}, "blend": {}})

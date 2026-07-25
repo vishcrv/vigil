@@ -74,27 +74,36 @@ RULE_WEIGHTS: dict[str, float] = _derive_rule_weights()
 # Firing at all is most of a rule's evidentiary value; the rule's own confidence (how far past
 # threshold it went) supplies the rest. Without this floor, a rule that fires just over its
 # threshold contributes almost nothing even when it is a 100%-precision rule.
-RULE_BASE_CREDIT = 0.60
+# Tuned (scripts/tune_blend.py): 0.60 -> 0.40. A lower floor spreads rule-driven scores out
+# instead of bunching every hit near its rule's weight, which is what let MEDIUM and HIGH
+# separate.
+RULE_BASE_CREDIT = 0.40
 
 # Detectors are far weaker than the good rules (Isolation Forest 2.3x lift vs 133x), so they
 # can raise a score but never carry one to CRITICAL alone. At D=1.0 with no rule hit the
 # combined score reaches exactly this value.
-DETECTOR_WEIGHT = 0.40
+# Tuned (scripts/tune_blend.py): 0.40 -> 0.30.
+DETECTOR_WEIGHT = 0.30
 
 # phase4.md §7: the top-scoring row for a sample account was a large routine self-transfer in
 # a payment format measured at a 0.0% laundering rate. Amount-driven features score those
 # highly, so damp the detector when the scored rows are dominated by that profile.
 BENIGN_FORMAT_RISK_CEILING = 1e-9
-BENIGN_DETECTOR_DAMPING = 0.50
+# Tuned (scripts/tune_blend.py): 0.50 -> 0.25.
+BENIGN_DETECTOR_DAMPING = 0.25
 
 # ACH measured 0.75% laundering rate against 0.038% for the next format (phase2.md §4), so
 # anything at or above this floor is the over-represented end of the distribution.
 ELEVATED_FORMAT_RISK_FLOOR = 0.005
 
+# Tuned against the validated sample (scripts/tune_blend.py, ml_spec.md "Blend tuning"):
+# was CRITICAL 0.75 / HIGH 0.50 / MEDIUM 0.25. The old floors put 62% of all accounts in
+# MEDIUM and left HIGH holding 0.5%; these split that bucket so HIGH+ recall goes 7.2% -> 66%
+# with CRITICAL's precision unchanged.
 RISK_THRESHOLDS = [
-    ("CRITICAL", 0.75),
-    ("HIGH", 0.50),
-    ("MEDIUM", 0.25),
+    ("CRITICAL", 0.55),
+    ("HIGH", 0.25),
+    ("MEDIUM", 0.20),
     ("LOW", 0.0),
 ]
 
@@ -109,15 +118,33 @@ ESCALATION_ACTIONS = {
 
 RISK_LEVELS = [level for level, _ in RISK_THRESHOLDS]
 
+# Same thresholds keyed by level, for callers that need to look one up rather than walk the
+# ordered list (the tuning sweep evaluates floors directly).
+RISK_ORDER_FLOORS: dict[str, float] = {level: floor for level, floor in RISK_THRESHOLDS}
 
-def _level_for(score: float) -> str:
-    for level, floor_val in RISK_THRESHOLDS:
+
+# The four constants above plus the thresholds, bundled so they can be varied without
+# reassigning module globals. `scripts/tune_blend.py` sweeps this; nothing else passes it, so
+# the default path is byte-for-byte the previous behaviour. Deliberately not exposed in the
+# tool schema — the agent has no business retuning the risk model mid-query.
+DEFAULT_BLEND: dict[str, Any] = {
+    "detector_weight": DETECTOR_WEIGHT,
+    "rule_base_credit": RULE_BASE_CREDIT,
+    "benign_damping": BENIGN_DETECTOR_DAMPING,
+    "thresholds": RISK_THRESHOLDS,
+}
+
+
+def _level_for(score: float, thresholds: list | None = None) -> str:
+    for level, floor_val in (thresholds or RISK_THRESHOLDS):
         if score >= floor_val:
             return level
     return "LOW"
 
 
-def _rule_component(rule_hits: list) -> tuple[float, str | None, list[dict]]:
+def _rule_component(
+    rule_hits: list, base_credit: float = RULE_BASE_CREDIT
+) -> tuple[float, str | None, list[dict]]:
     """Strongest weighted rule hit, plus a per-rule breakdown for `explain`.
 
     Uses the maximum rather than a sum: two weak rules firing on the same account is not
@@ -135,7 +162,7 @@ def _rule_component(rule_hits: list) -> tuple[float, str | None, list[dict]]:
         confidence = hit.get("score")
         confidence = float(confidence) if isinstance(confidence, (int, float)) else 0.0
         confidence = min(max(confidence, 0.0), 1.0)
-        contribution = weight * (RULE_BASE_CREDIT + (1.0 - RULE_BASE_CREDIT) * confidence)
+        contribution = weight * (base_credit + (1.0 - base_credit) * confidence)
         scored.append({
             "rule": name,
             "account": hit.get("account"),
@@ -188,7 +215,11 @@ def _flag_fractions(top_rows: list) -> dict[str, float]:
     }
 
 
-def risk(anomaly_result: dict, context: dict | None = None) -> dict:
+def risk(
+    anomaly_result: dict,
+    context: dict | None = None,
+    blend: dict | None = None,
+) -> dict:
     if not isinstance(anomaly_result, dict):
         return {"error": "anomaly_result must be a dict"}
     if context is not None and not isinstance(context, dict):
@@ -214,6 +245,11 @@ def risk(anomaly_result: dict, context: dict | None = None) -> dict:
 
     try:
         context = context or {}
+        settings = {**DEFAULT_BLEND, **(blend or {})}
+        detector_weight = settings["detector_weight"]
+        base_credit = settings["rule_base_credit"]
+        benign_damping = settings["benign_damping"]
+        thresholds = settings["thresholds"]
         rule_hits = anomaly_result.get("rule_hits") or []
         top_rows = anomaly_result.get("top_rows") or []
         rows_scored = anomaly_result.get("row_count_scored") or 0
@@ -253,21 +289,21 @@ def risk(anomaly_result: dict, context: dict | None = None) -> dict:
         else:
             subject_hits, counterparty_hits = rule_hits, []
 
-        rule_score, top_rule, rule_breakdown = _rule_component(subject_hits)
+        rule_score, top_rule, rule_breakdown = _rule_component(subject_hits, base_credit)
         # Deliberately does not feed the score: transacting with a flagged account is
         # meaningful in AML, but no weight for it was measured in Phase 4 and inventing one
         # would be a guess. Surfaced so `explain` can say it and a judge can follow it up.
-        _, _, counterparty_breakdown = _rule_component(counterparty_hits)
+        _, _, counterparty_breakdown = _rule_component(counterparty_hits, base_credit)
 
         benign_fraction = _benign_fraction(top_rows)
-        adjusted_detector = detector_score * (1.0 - BENIGN_DETECTOR_DAMPING * benign_fraction)
+        adjusted_detector = detector_score * (1.0 - benign_damping * benign_fraction)
 
         # Rules lead; the detector fills part of the remaining headroom. Multiplying into
         # (1 - rule_score) keeps the result in [0,1] and stops a strong rule plus a strong
         # detector from summing past the top of the scale.
-        combined = rule_score + (1.0 - rule_score) * adjusted_detector * DETECTOR_WEIGHT
+        combined = rule_score + (1.0 - rule_score) * adjusted_detector * detector_weight
         combined = min(max(combined, 0.0), 1.0)
-        level = _level_for(combined)
+        level = _level_for(combined, thresholds)
 
         top_row = top_rows[0] if top_rows and isinstance(top_rows[0], dict) else {}
         customer_id = (

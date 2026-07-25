@@ -264,6 +264,9 @@ scoping. Population: 6,357 laundering-involved / 508,723 clean = **1.234% base r
 share — Horvitz-Thompson, weights 10.6 (laundering) and 363.4 (clean). Raw sampled proportions
 would overstate precision by more than an order of magnitude and must not be quoted.
 
+**Baseline, before the blend constants were tuned** (kept for comparison — the current numbers
+are in "Blend tuning" below):
+
 | Risk level | Sampled n | Sampled launderers | Est. population n | Precision | Worst case | Lift | Recall |
 |---|---|---|---|---|---|---|---|
 | LOW | 565 | 31 | 194,370 | 0.2% | 0.2% | 0.1x | 5.2% |
@@ -291,6 +294,77 @@ Recall at MEDIUM+ 94.8%, HIGH+ 7.2%, CRITICAL+ 4.2%.
 Cells with fewer than `MIN_CELL_FOR_STABLE_ESTIMATE` (10) sampled accounts are flagged
 `noisy` in the JSON and marked in the rendered table — HIGH at n=24 is thin enough that its
 3.7%–25.1% interval is the honest width.
+
+---
+
+## Blend tuning (`scripts/tune_blend.py`)
+
+`DETECTOR_WEIGHT`, `RULE_BASE_CREDIT`, `BENIGN_DETECTOR_DAMPING` and the four `RISK_THRESHOLDS`
+were hand-picked. They are now searched against an explicit objective over the validated
+sample, replaying `risk()` on cached `anomaly()` output (no account is re-scored; scores depend
+only on the weights, so the sweep computes 2,000 scores per weight triple and evaluates all 416
+threshold sets against that vector).
+
+**Objective, after two revisions — both forced by the search gaming the previous version:**
+
+```
+minimize   the largest actionable tier's share of population   (MEDIUM, HIGH or CRITICAL)
+subject to precision strictly increasing LOW < MEDIUM < HIGH < CRITICAL
+           recall at HIGH+   >= baseline (7.167%)
+           recall at MEDIUM+ >= baseline (94.833%)
+           precision at CRITICAL >= 25%
+```
+
+1. *Minimize MEDIUM's share* alone drove MEDIUM to 0.4% by squeezing it into a 0.05-wide band
+   and moving **80% of the population into HIGH**. Every constraint held; the dumping ground
+   was relabelled, not removed. Scoring the largest tier instead makes relabelling worthless.
+2. *Minimize the largest actionable tier* then inflated CRITICAL to 22% of the population at
+   3% precision — spreading the load by destroying the one tier that worked. Hence the
+   CRITICAL precision floor.
+3. Recall floors are read off the baseline at runtime, not hardcoded: the rounded 7.2% / 94.8%
+   in the table above made the *current* constants fail their own constraint (true HIGH+
+   recall is 7.167%).
+
+**Result** — `DETECTOR_WEIGHT` 0.40→0.30, `RULE_BASE_CREDIT` 0.60→0.40,
+`BENIGN_DETECTOR_DAMPING` 0.50→0.25, thresholds CRITICAL 0.75→0.55, HIGH 0.50→0.25,
+MEDIUM 0.25→0.20:
+
+| Level | Share before | Share after | Precision before | after | Recall before | after |
+|---|---|---|---|---|---|---|
+| LOW | 37.7% | 37.8% | 0.17% | 0.10% | 5.2% | 3.0% |
+| MEDIUM | **61.8%** | **34.0%** | 1.75% | 1.13% | 87.7% | 31.0% |
+| HIGH | **0.5%** | **28.2%** | 8.04% | 2.69% | 3.0% | 61.5% |
+| CRITICAL | 0.1% | 0.1% | 100% | 100% | 4.2% | 4.5% |
+
+Recall at MEDIUM+ 94.8% → **97.0%**, HIGH+ 7.2% → **66.0%**, CRITICAL+ 4.2% → 4.5%. Accounts
+moved *up*, which is the check that matters: shrinking MEDIUM by pushing true positives down
+into LOW would have improved the objective while making the product worse.
+
+**Held-out check.** The constants were selected on the seed-42 sample, so they were re-measured
+end-to-end on seed 7 — 2,000 accounts the search never saw:
+
+| Level | Precision (seed 42) | Precision (seed 7) | Recall (seed 42) | Recall (seed 7) |
+|---|---|---|---|---|
+| LOW | 0.1% | 0.2% | 3.0% | 4.3% |
+| MEDIUM | 1.1% | 1.0% | 31.0% | 30.8% |
+| HIGH | 2.7% | 2.7% | 61.5% | 60.5% |
+| CRITICAL | 100% (worst 20.8%) | 100% (worst 20.2%) | 4.5% | 4.3% |
+
+MEDIUM+ recall 97.0% / 95.7%, HIGH+ 66.0% / 64.8%. The gain reproduces on unseen accounts, so
+this is tuning rather than fitting to 2,000 sampled accounts.
+
+**What this does not do.** Total actionable share is unchanged: 62.3% → 62.2% of accounts still
+land at REVIEW-or-above, and `ESCALATION_ACTIONS` maps both MEDIUM and HIGH to `REVIEW`, so the
+recommended *action* for those accounts is identical. The gain is ordering inside that bucket —
+HIGH now carries 61.5% of all launderers at 2.4x MEDIUM's precision, so a reviewer working HIGH
+first sees far better yield. It is not a reduction in review workload, and should not be
+described as one.
+
+Two tests changed because they asserted levels derived from the old constants, not because
+behaviour regressed: `test_detector_alone_cannot_reach_critical` expected the literal `MEDIUM`
+(DETECTOR_WEIGHT now lands in HIGH — rewritten to assert the invariant that it is never
+CRITICAL), and `test_self_loop_zero_risk_format_rows_damp_the_detector` expected the literal
+`LOW` (now asserts damping costs a tier relative to the same score undamped).
 
 ---
 
