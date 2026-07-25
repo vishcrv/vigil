@@ -37,12 +37,25 @@ without checking the others.
    each run, updated by `/escalate`. This is cheap (stdlib `sqlite3`, one file, no server) and buys
    two real things: an actual audit trail, which fits a compliance product, and a working `/escalate`
    endpoint instead of a stub. See Database Schema below for the full shape.
-4. **LLM: Claude for dev, provider-agnostic for judges.** Development and internal testing run on
-   Claude (`LLM_PROVIDER=anthropic` as the default in `.env.example`). The hand-rolled provider-agnostic
-   loop (decided in item 4a below, unchanged) still supports Groq/Gemini via env swap for anyone
-   running it themselves. README disclosure: state plainly that the team built and tested against
-   Claude (Anthropic API), and that Groq/Gemini are supported alternates via `LLM_PROVIDER` for
-   judges using their own keys. That's an accurate, complete disclosure either way.
+4. **LLM: ~~Claude for dev~~ → Gemini for dev, provider-agnostic for judges.** **⚠ REVERSED during
+   implementation (2026-07-25).** The original call was to develop and test against Claude
+   (`LLM_PROVIDER=anthropic`). In practice **no Anthropic API key was obtainable** — a Claude
+   *subscription* (claude.ai) does not include API credits; the Anthropic API is separately billed
+   via console.anthropic.com. Dev/testing therefore runs on **Gemini** (`LLM_PROVIDER=gemini`,
+   model `gemini-flash-latest`), which has a usable free tier.
+   - The hand-rolled provider-agnostic loop (item 4a, unchanged) is what made this a config-level
+     swap plus one new wrapper class — `agent/loop.py` needed zero changes. This is the design
+     paying for itself.
+   - **Anthropic support is still built and still the code default**, just never exercised against
+     the live API. Groq still raises `NotImplementedError`.
+   - **README disclosure must say Gemini, not Claude** — state plainly that the team built and
+     tested against Google's Gemini API, that Anthropic is implemented but untested, and that
+     `LLM_PROVIDER` lets judges swap in whichever key they hold. Disclosing "tested against Claude"
+     would now be false.
+   - Practical gotcha worth carrying into the README's setup steps: the Gemini key must come from
+     **aistudio.google.com/apikey**, not the Google Cloud Console — Cloud-Console-issued keys land
+     in a project with a zero free-tier quota grant and fail with `429 RESOURCE_EXHAUSTED`
+     regardless of enabling the API.
 4a. **Orchestration: hand-rolled tool-calling loop, not headless Claude Code CLI, not LangGraph.**
    (Unchanged from the previous revision, kept here for continuity.) This was briefly changed to
    headless Claude Code CLI mid-planning, then reverted because it can't satisfy "judges drop
@@ -77,8 +90,9 @@ State     : React built-ins (useState/useContext), no state library planned; SPA
 Backend   : FastAPI (Python, async)
 Agent     : Hand-rolled LLM tool-calling loop, provider selected via `LLM_PROVIDER` env var,
             NOT headless Claude Code CLI (tried mid-session, reverted, see Q4a), NOT LangGraph
-LLM       : Claude (default, `LLM_PROVIDER=anthropic`, what dev/testing runs on); Groq/Gemini
-            supported alternates via `.env` swap for judges using their own keys
+LLM       : Gemini (`LLM_PROVIDER=gemini`, `gemini-flash-latest`) is what dev/testing actually
+            runs on — see Decisions Log item 4, reversed from Claude because no Anthropic API
+            key was obtainable. Anthropic built + code-default but live-untested; Groq not built.
 Dev tool  : Claude Code (interactive or headless) may be used to help *write* this code; that's a
             dev-time tool, disclosed in README like any AI assistant, and does not run at query time
 Database  : SQLite (`queries` + `flags` tables, audit trail + working `/escalate`). Bulk data still

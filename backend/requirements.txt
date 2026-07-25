@@ -8,4 +8,6 @@ scikit-learn
 duckdb
 pyarrow
 anthropic
+google-genai
+truststore
 pytest

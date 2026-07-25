@@ -1,59 +1,275 @@
-:root {
-  --bg: #f6f7f9;
-  --surface: #fff;
-  --border: #dfe3e8;
-  --text: #1d2939;
-  --muted: #667085;
-  --accent: #175cd3;
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
 
-  font:
-    14px/1.5 system-ui,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
-  color: var(--text);
-  -webkit-font-smoothing: antialiased;
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: light;
+
+  /* Base surfaces */
+  --background: oklch(98.5% 0.004 247);
+  --foreground: oklch(21% 0.03 258);
+  --card: oklch(100% 0 0);
+  --card-foreground: oklch(21% 0.03 258);
+  --popover: oklch(100% 0 0);
+  --popover-foreground: oklch(21% 0.03 258);
+
+  /* Brand */
+  --primary: oklch(52% 0.19 260);
+  --primary-foreground: oklch(98.5% 0.004 247);
+
+  --secondary: oklch(95.5% 0.007 248);
+  --secondary-foreground: oklch(27% 0.03 258);
+
+  --muted: oklch(95.5% 0.007 248);
+  --muted-foreground: oklch(50% 0.03 258);
+
+  --accent: oklch(94% 0.015 258);
+  --accent-foreground: oklch(27% 0.03 258);
+
+  --destructive: oklch(56% 0.22 27);
+  --destructive-foreground: oklch(98.5% 0.004 247);
+
+  --border: oklch(91% 0.008 248);
+  --input: oklch(91% 0.008 248);
+  --ring: oklch(52% 0.19 260 / 45%);
+
+  /* Risk semantics */
+  --risk-high: oklch(52% 0.21 25);
+  --risk-high-bg: oklch(96% 0.03 25);
+  --risk-medium: oklch(55% 0.16 60);
+  --risk-medium-bg: oklch(96% 0.04 75);
+  --risk-low: oklch(52% 0.13 155);
+  --risk-low-bg: oklch(96% 0.035 150);
+
+  --chart-1: var(--risk-high);
+  --chart-2: var(--risk-medium);
+  --chart-3: var(--risk-low);
+  --chart-4: oklch(55% 0.16 280);
+  --chart-5: oklch(60% 0.03 258);
+
+  --radius: 0.625rem;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: oklch(12% 0.002 258);
+  --foreground: oklch(93% 0.002 258);
+  --card: oklch(16% 0.003 258);
+  --card-foreground: oklch(93% 0.002 258);
+  --popover: oklch(16% 0.003 258);
+  --popover-foreground: oklch(93% 0.002 258);
+
+  --primary: oklch(68% 0.16 258);
+  --primary-foreground: oklch(15% 0.03 258);
+
+  --secondary: oklch(20% 0.004 258);
+  --secondary-foreground: oklch(93% 0.002 258);
+
+  --muted: oklch(20% 0.004 258);
+  --muted-foreground: oklch(64% 0.006 258);
+
+  --accent: oklch(23% 0.005 258);
+  --accent-foreground: oklch(93% 0.002 258);
+
+  --destructive: oklch(65% 0.2 25);
+  --destructive-foreground: oklch(15% 0.03 258);
+
+  --border: oklch(24% 0.005 258);
+  --input: oklch(24% 0.005 258);
+  --ring: oklch(68% 0.16 258 / 50%);
+
+  --risk-high: oklch(72% 0.17 22);
+  --risk-high-bg: oklch(30% 0.06 25);
+  --risk-medium: oklch(78% 0.14 70);
+  --risk-medium-bg: oklch(30% 0.05 75);
+  --risk-low: oklch(74% 0.14 155);
+  --risk-low-bg: oklch(28% 0.05 155);
+
+  --chart-1: var(--risk-high);
+  --chart-2: var(--risk-medium);
+  --chart-3: var(--risk-low);
+  --chart-4: oklch(70% 0.14 280);
+  --chart-5: oklch(70% 0.02 258);
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  -webkit-font-smoothing: antialiased;
+}
+
 body {
   margin: 0;
-  background: var(--bg);
 }
 
-button {
-  font: inherit;
-  cursor: pointer;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text);
+@theme inline {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-risk-high: var(--risk-high);
+  --color-risk-high-bg: var(--risk-high-bg);
+  --color-risk-medium: var(--risk-medium);
+  --color-risk-medium-bg: var(--risk-medium-bg);
+  --color-risk-low: var(--risk-low);
+  --color-risk-low-bg: var(--risk-low-bg);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+
+  --animate-fade-up: fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-fade-in: fade-in 0.25s ease-out both;
+  --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
 }
 
-button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply text-foreground;
+    background: var(--background);
+    background-image:
+      radial-gradient(80rem 40rem at 15% -10%, color-mix(in oklch, var(--primary) 10%, transparent), transparent),
+      radial-gradient(60rem 30rem at 100% 0%, color-mix(in oklch, var(--primary) 6%, transparent), transparent);
+    background-attachment: fixed;
+  }
+  .dark body {
+    background-image:
+      radial-gradient(80rem 40rem at 15% -10%, color-mix(in oklch, var(--primary) 4%, transparent), transparent),
+      radial-gradient(60rem 30rem at 100% 0%, color-mix(in oklch, var(--primary) 2.5%, transparent), transparent);
+  }
+  html {
+    @apply font-sans;
+  }
+  ::selection {
+    @apply bg-primary/20;
+  }
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
+/* Frosted glass surface - used on panels, sidebar, composer, dialogs */
+.glass {
+  background: color-mix(in oklch, var(--card) 72%, transparent);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent);
+  box-shadow:
+    0 1px 2px color-mix(in oklch, var(--foreground) 4%, transparent),
+    0 12px 32px -12px color-mix(in oklch, var(--foreground) 14%, transparent);
+}
+.dark .glass {
+  border-color: color-mix(in oklch, white 8%, transparent);
+  box-shadow:
+    0 1px 0 color-mix(in oklch, white 4%, transparent) inset,
+    0 16px 40px -16px color-mix(in oklch, black 60%, transparent);
 }
 
-input {
-  font: inherit;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text);
+/* Smaller frosted chip - stat tiles, badges nested inside an already-glass panel */
+.glass-chip {
+  background: color-mix(in oklch, var(--card) 55%, transparent);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  border: 1px solid color-mix(in oklch, var(--foreground) 9%, transparent);
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 5%, transparent);
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.dark .glass-chip {
+  border-color: color-mix(in oklch, white 9%, transparent);
+  box-shadow:
+    0 1px 0 color-mix(in oklch, white 5%, transparent) inset,
+    0 4px 12px -4px color-mix(in oklch, black 50%, transparent);
+}
+.glass-chip:hover {
+  background: color-mix(in oklch, var(--card) 68%, transparent);
 }
 
-input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Thin, theme-aware scrollbar for the chat/table scroll regions */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
 }
