@@ -1,0 +1,73 @@
+{
+  "query": "Show me suspicious structuring activity in the last week",
+  "summary": "Found 3 accounts showing structuring behaviour across 3 transactions. Account 8000EBD30 is the highest risk: 14 transfers just under the 10,000 reporting threshold within 48 hours, 4.2 standard deviations above its own historical pattern.",
+  "execution_summary": {
+    "intent_detected": "PATTERN_SEARCH",
+    "filters_applied": {
+      "date_range": ["2022-09-01", "2022-09-08"],
+      "aml_pattern": "FAN-OUT",
+      "min_amount": 5000
+    },
+    "tools_invoked": ["eda", "feature_eng", "anomaly", "risk", "explain"],
+    "tools_skipped": [
+      {
+        "name": "escalate",
+        "reason": "Query asked to identify activity, not to action it. Escalation left to the analyst."
+      }
+    ]
+  },
+  "flagged_items": [
+    {
+      "flag_id": 1,
+      "customer_id": "8000EBD30",
+      "transaction_id": "TXN-0041827",
+      "amount": 9750.0,
+      "timestamp": "2022-09-03T02:14:00",
+      "risk_level": "HIGH",
+      "pattern_detected": "FAN-OUT",
+      "anomaly_score": 0.91,
+      "explanation": "Account 8000EBD30 sent to 14 distinct receivers within 48 hours, 4.2 standard deviations above its own historical average of 2.1 receivers/week - consistent with FAN-OUT structuring.",
+      "escalation_action": "REPORT",
+      "escalated_at": null
+    },
+    {
+      "flag_id": 2,
+      "customer_id": "8014B2A70",
+      "transaction_id": "TXN-0041903",
+      "amount": 9900.0,
+      "timestamp": "2022-09-04T23:41:00",
+      "risk_level": "HIGH",
+      "pattern_detected": "FAN-OUT",
+      "anomaly_score": 0.87,
+      "explanation": "Account 8014B2A70 made 9 transfers between 9,800 and 9,950 in 36 hours, all below the 10,000 reporting threshold - amount clustering consistent with deliberate structuring.",
+      "escalation_action": "REPORT",
+      "escalated_at": "2026-07-25T14:32:00"
+    },
+    {
+      "flag_id": 3,
+      "customer_id": "800A19C40",
+      "transaction_id": "TXN-0042118",
+      "amount": 6200.0,
+      "timestamp": "2022-09-05T11:07:00",
+      "risk_level": "MEDIUM",
+      "pattern_detected": "CURRENCY_MISMATCH",
+      "anomaly_score": 0.63,
+      "explanation": "Payment currency (USD) differs from receiving currency (EUR) on a transfer 2.8 standard deviations above this sender's average, with no prior cross-currency history on the account.",
+      "escalation_action": "REVIEW",
+      "escalated_at": null
+    },
+    {
+      "flag_id": 4,
+      "customer_id": "8021F0B10",
+      "transaction_id": "TXN-0042250",
+      "amount": 45000.0,
+      "timestamp": "2022-09-06T15:33:00",
+      "risk_level": "LOW",
+      "pattern_detected": "NORMAL",
+      "anomaly_score": 0.31,
+      "explanation": "Isolation Forest flagged this transfer as an outlier on amount alone (1.9 standard deviations). No structuring rule fired and the account has consistent prior large-transfer history - likely benign.",
+      "escalation_action": "MONITOR",
+      "escalated_at": null
+    }
+  ]
+}
