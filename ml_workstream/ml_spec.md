@@ -246,6 +246,54 @@ Minimum, matching `spec.md`'s stated coverage target:
 
 ---
 
+## Risk-level validation (measured end-to-end)
+
+`scripts/validate_risk_levels.py` pushes a labelled account sample through the real tool
+surface — `dispatch("anomaly")` → `dispatch("risk")`, no shortcut — and cross-tabulates the
+emitted `risk_level` against ground truth. Artifacts: `data/models/risk_validation.json`
+(summary) and `risk_validation_records.json` (raw scored sample, used by the constant sweep).
+Deliberately *not* written into `metadata.json`, which `train_models.py` rewrites wholesale.
+
+**Sample**: 600 laundering-involved + 1,400 clean accounts, seed 42, 2,000 scored with zero
+errors. Ground truth is account-level — an account counts as laundering-involved if it appears
+on either side of at least one `is_laundering` transaction, matching `risk`'s `role="both"`
+scoping. Population: 6,357 laundering-involved / 508,723 clean = **1.234% base rate**.
+
+**Weighting**: the laundering stratum is deliberately over-sampled (a random 2,000 would hold
+~25 positives, far too few per level), so each observation is reweighted to its population
+share — Horvitz-Thompson, weights 10.6 (laundering) and 363.4 (clean). Raw sampled proportions
+would overstate precision by more than an order of magnitude and must not be quoted.
+
+| Risk level | Sampled n | Sampled launderers | Est. population n | Precision | Worst case | Lift | Recall |
+|---|---|---|---|---|---|---|---|
+| LOW | 565 | 31 | 194,370 | 0.2% | 0.2% | 0.1x | 5.2% |
+| MEDIUM | 1,386 | 526 | 318,074 | 1.8% | 1.8% | 1.4x | 87.7% |
+| HIGH | 24 | 18 | 2,371 | 8.0% | 8.0% | 6.5x | 3.0% |
+| CRITICAL | 25 | 25 | 265 | 100.0% | **19.5%** | 81.0x | 4.2% |
+
+Recall at MEDIUM+ 94.8%, HIGH+ 7.2%, CRITICAL+ 4.2%.
+
+**Read this table carefully — three things in it are easy to misreport.**
+
+1. **CRITICAL precision is not 100%.** All 25 sampled CRITICAL accounts were launderers and
+   *no* clean account reached CRITICAL, so the cell has no observed false positives and both
+   the point estimate and the stratified bootstrap collapse to exactly 100%. That is an empty
+   cell, not certainty. The rule-of-three bound (0 in 1,400 clean → rate up to 3/1,400 → up to
+   ~1,090 estimated clean accounts) puts the honest range at **~20%–100%**. Quote the worst
+   case, or quote the range; never the bare 100%.
+2. **MEDIUM is a dumping ground.** An estimated 318,074 accounts — **~62% of the entire
+   population** — at 1.8% precision. A triage tier holding two-thirds of all accounts sorts
+   nothing, and this is the clearest miscalibration in the system.
+3. **Coverage at the actionable tiers is small.** HIGH+ catches 7.2% of laundering-involved
+   accounts, CRITICAL+ 4.2%. The ordering across levels is monotonic and directionally
+   correct (0.2% → 1.8% → 8.0% → ~100%), but nearly everything lands in one bucket.
+
+Cells with fewer than `MIN_CELL_FOR_STABLE_ESTIMATE` (10) sampled accounts are flagged
+`noisy` in the JSON and marked in the rendered table — HIGH at n=24 is thin enough that its
+3.7%–25.1% interval is the honest width.
+
+---
+
 ## Hand-off to teammate — `ml/tools.py`
 
 The signatures ml_spec said to lock early are now a module, so the loop does not need to know

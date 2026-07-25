@@ -12,6 +12,8 @@ here is the whole reason Phase 4 kept the signals separate instead of blending t
 """
 from typing import Any
 
+from ml.validation import wilson_lower_bound
+
 # --- Rule weights, derived from the measured table in phase4.md §3 ------------------------
 # (accounts hit, precision) per rule. Both numbers matter: the hit count is what says how much
 # of the precision to believe. BIPARTITE's headline 6.7% rests on 15 accounts and STACK's 2.7%
@@ -39,15 +41,10 @@ def _wilson_lower_bound(hits: int, precision: float, z: float = _WILSON_Z) -> fl
 
     Shrinks a rule's credit toward zero in proportion to how little was measured, so a rule
     seen 15 times cannot outrank one seen 1,736 times on the strength of a noisier point
-    estimate.
+    estimate. Shares one implementation with the validation cross-tab, which needs the full
+    interval.
     """
-    if hits <= 0:
-        return 0.0
-    successes = precision
-    denominator = 1.0 + z * z / hits
-    centre = successes + z * z / (2 * hits)
-    margin = z * ((successes * (1 - successes) / hits + z * z / (4 * hits * hits)) ** 0.5)
-    return max((centre - margin) / denominator, 0.0)
+    return wilson_lower_bound(hits, precision, z)
 
 
 def _derive_rule_weights() -> dict[str, float]:
