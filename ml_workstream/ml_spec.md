@@ -172,16 +172,29 @@ Minimum, matching `spec.md`'s stated coverage target:
 
 ---
 
-## Open decisions (blocking, need answers before Phase 5/6 finalize)
+## Open decisions — all resolved
 
-1. **Risk level scale** — not yet defined (LOW/MEDIUM/HIGH/CRITICAL vs numeric vs something else).
-   Blocks `flags` table integration with teammate.
-2. **`is_suspicious` definition** — pattern-file match vs raw `Is Laundering==1` vs both as separate
-   columns (recommended: both, see Phase 2 table).
-3. **Self-loop rows (11.6% of data)** — keep, drop, or flag-only. Affects baseline stats if kept
-   unflagged.
-4. **Amount-category bucket edges** — need concrete thresholds off the log-distribution, not chosen
-   yet.
+1. **Risk level scale** — **RESOLVED: `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`** (string enum, four
+   tiers). Maps onto the three `escalation_action` values from `spec.md` line 182 as
+   LOW→MONITOR, MEDIUM/HIGH→REVIEW, CRITICAL→REPORT. Four tiers rather than three so the
+   flagged-items table stays usable for triage — collapsing "unusual" and "almost certainly
+   laundering" into one HIGH bucket removes the distinction a judge most needs. **Tell teammate:
+   `flags.risk_level` is a 4-value TEXT column.**
+2. **`is_suspicious` definition** — RESOLVED in Phase 2: both columns kept (`is_laundering` raw
+   label, `is_suspicious`/`aml_pattern` pattern-file match). See `phase2.md` §2.
+3. **Self-loop rows (11.6%)** — RESOLVED in Phase 2: kept and flagged via `is_self_loop`, not
+   dropped. Phase 4 excludes them from the *graph* pass only (a transfer to yourself has no
+   counterparty and cannot form a motif); they remain in baselines and detector features.
+4. **Amount-category bucket edges** — RESOLVED in Phase 2: 6 quantile buckets over
+   `log1p(Amount Received)`. See `phase2.md` §2.
 
-Resolve these before Phase 4/5 code is finalized — flag to teammate as soon as decided since #1
-blocks their schema work too.
+### Phase 4 decisions (recorded here, not in the original list)
+
+5. **Where detectors are fit** — pre-fit once at build time (`scripts/train_models.py`), artifacts
+   persisted to `data/models/`. Fitting per-call was rejected: a 70-row account scope produces a
+   meaningless forest, and scores would shift between identical calls. LOF uses `novelty=True` so
+   it can score unseen rows.
+6. **Where graph rules run** — batch precompute (`scripts/build_rule_hits.py` →
+   `data/HI-Small_Rule_Hits.parquet`), joined at query time. Multi-hop motifs over 1,015,736 edges
+   are too slow per-call, and a cycle reaching outside the caller's scope would be invisible to a
+   scope-local pass — exactly the multi-hop structure these rules exist to catch.

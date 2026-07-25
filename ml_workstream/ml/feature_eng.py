@@ -22,7 +22,7 @@ _RECORD_COLUMNS = [
 ]
 
 
-def _validate_scope(scope: dict) -> tuple[dict, list[str]]:
+def validate_scope(scope: dict) -> tuple[dict, list[str]]:
     """Normalize + validate scope fields. Returns (clean_scope, errors) — never raises."""
     if not isinstance(scope, dict):
         return {}, ["scope must be a dict"]
@@ -87,7 +87,7 @@ def _validate_scope(scope: dict) -> tuple[dict, list[str]]:
     return clean, errors
 
 
-def _build_where(scope: dict) -> tuple[str, list]:
+def build_where(scope: dict) -> tuple[str, list]:
     clauses = []
     params: list = []
 
@@ -124,13 +124,13 @@ def _build_where(scope: dict) -> tuple[str, list]:
 
 
 def feature_eng(scope: dict) -> dict:
-    clean_scope, errors = _validate_scope(scope)
+    clean_scope, errors = validate_scope(scope)
     if errors:
         return {"error": "; ".join(errors), "scope": scope}
 
     try:
         con = get_connection()
-        where_sql, params = _build_where(clean_scope)
+        where_sql, params = build_where(clean_scope)
 
         agg_sql = f"""
             SELECT

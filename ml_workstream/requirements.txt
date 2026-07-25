@@ -2,3 +2,6 @@ pandas
 numpy
 pyarrow
 duckdb
+scikit-learn
+joblib
+pytest
