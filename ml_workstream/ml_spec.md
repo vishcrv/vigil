@@ -235,9 +235,12 @@ Minimum, matching `spec.md`'s stated coverage target:
 13. **One enriched Parquet, not two.** `HI-Small_Agent_Ready.parquet` was a byte-identical
     352 MB copy of `HI-Small_Enriched.parquet` — Phase 3 defines no extra precomputed columns,
     so its real deliverable is the `feature_eng` tool. `scripts/enrich.py` writes only
-    `HI-Small_Enriched.parquet`. **Divergence from `spec.md`, which names both files as
-    deliverables — `spec.md` needs a one-line correction (it wins on conflicts, so fix it
-    there rather than reinstating the copy).**
+    `HI-Small_Enriched.parquet`.
+    **Verified 2026-07-25**: the edited script was re-run from the raw CSVs and reproduces the
+    on-disk parquet byte for byte — sha256 `cc5da2ae…3dec2d`, 352,607,697 bytes, 5,078,345 rows
+    × 32 columns, 3,209 pattern-matched / 5,177 laundering rows. The rebuild is deterministic,
+    and the models, rule hits and validation samples were all built from a parquet the current
+    script still produces.
 14. **Repeat-query caching** (`ml/cache.py`): `eda`, `feature_eng` and `anomaly` are memoized
     on JSON-canonicalized arguments, results deep-copied on the way out so a caller mutating
     one cannot poison the next. A repeated `anomaly` call goes 1.96s → ~0s. `risk` and
