@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+frontend/dist/
+
+# Env
+.env
+
+# Data (raw + derived, not committed)
+*.csv
+*.parquet
+backend/data/raw/*
+!backend/data/raw/.gitkeep
+
+# SQLite
+aml_agent.db
