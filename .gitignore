@@ -1,0 +1,13 @@
+HI-Small_Trans.csv
+HI-Small_accounts.csv
+HI-Small_Patterns.txt
+data/
+*.parquet
+aml_agent.db
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.ipynb_checkpoints/
