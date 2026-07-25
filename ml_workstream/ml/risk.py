@@ -44,6 +44,10 @@ DETECTOR_WEIGHT = 0.40
 BENIGN_FORMAT_RISK_CEILING = 1e-9
 BENIGN_DETECTOR_DAMPING = 0.50
 
+# ACH measured 0.75% laundering rate against 0.038% for the next format (phase2.md §4), so
+# anything at or above this floor is the over-represented end of the distribution.
+ELEVATED_FORMAT_RISK_FLOOR = 0.005
+
 RISK_THRESHOLDS = [
     ("CRITICAL", 0.75),
     ("HIGH", 0.50),
@@ -118,6 +122,29 @@ def _benign_fraction(top_rows: list) -> float:
     return benign / len(usable)
 
 
+def _flag_fractions(top_rows: list) -> dict[str, float]:
+    """Descriptive row-level flags: currency mismatch and elevated payment-format risk.
+
+    These do **not** feed the score. Neither was measured as an independent signal in Phase 4,
+    so weighting them here would be an unmeasured guess. They are surfaced because Phase 6
+    needs a citable reason when no rule fired — `ml_spec.md` requires an explanation path for
+    currency-mismatch / payment-format-only flags, and that path needs real values to quote.
+    """
+    usable = [r for r in top_rows if isinstance(r, dict)]
+    if not usable:
+        return {"currency_mismatch": 0.0, "elevated_payment_format": 0.0}
+    mismatch = sum(1 for r in usable if r.get("currency_mismatch") is True)
+    elevated = sum(
+        1 for r in usable
+        if isinstance(r.get("payment_format_risk"), (int, float))
+        and r["payment_format_risk"] >= ELEVATED_FORMAT_RISK_FLOOR
+    )
+    return {
+        "currency_mismatch": mismatch / len(usable),
+        "elevated_payment_format": elevated / len(usable),
+    }
+
+
 def risk(anomaly_result: dict, context: dict | None = None) -> dict:
     if not isinstance(anomaly_result, dict):
         return {"error": "anomaly_result must be a dict"}
@@ -157,7 +184,27 @@ def risk(anomaly_result: dict, context: dict | None = None) -> dict:
                 "contributing_signals": {"note": "no transactions matched this scope"},
             }
 
-        rule_score, top_rule, rule_breakdown = _rule_component(rule_hits)
+        # anomaly() returns rule hits for every account appearing in the scoped rows, which
+        # includes counterparties. Attributing a counterparty's motif to the subject account
+        # would write a factually wrong flags row ("this account fans out" when its payee
+        # does). When the scope names an account, only that account's hits drive the score
+        # and pattern_detected; the rest are reported as network context.
+        subject = (anomaly_result.get("scope") or {}).get("account_id")
+        if subject:
+            subject_hits = [
+                h for h in rule_hits if isinstance(h, dict) and h.get("account") == subject
+            ]
+            counterparty_hits = [
+                h for h in rule_hits if isinstance(h, dict) and h.get("account") != subject
+            ]
+        else:
+            subject_hits, counterparty_hits = rule_hits, []
+
+        rule_score, top_rule, rule_breakdown = _rule_component(subject_hits)
+        # Deliberately does not feed the score: transacting with a flagged account is
+        # meaningful in AML, but no weight for it was measured in Phase 4 and inventing one
+        # would be a guess. Surfaced so `explain` can say it and a judge can follow it up.
+        _, _, counterparty_breakdown = _rule_component(counterparty_hits)
 
         benign_fraction = _benign_fraction(top_rows)
         adjusted_detector = detector_score * (1.0 - BENIGN_DETECTOR_DAMPING * benign_fraction)
@@ -192,7 +239,10 @@ def risk(anomaly_result: dict, context: dict | None = None) -> dict:
                 "detector_component_adjusted": round(adjusted_detector, 4),
                 "benign_profile_fraction": round(benign_fraction, 4),
                 "rules_fired": rule_breakdown,
+                "counterparty_rules": counterparty_breakdown,
                 "rows_scored": rows_scored,
+                # Descriptive only - see _flag_fractions. Phase 6 quotes these.
+                "row_flags": {k: round(v, 4) for k, v in _flag_fractions(top_rows).items()},
             },
         }
     except Exception as exc:

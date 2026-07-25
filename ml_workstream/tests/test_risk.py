@@ -233,3 +233,52 @@ def test_malformed_rule_hits_do_not_raise():
 def test_risk_score_stays_within_unit_range(score):
     result = risk(make_anomaly(anomaly_score=score, rules=[("SCATTER-GATHER", 1.0)]))
     assert 0.0 <= result["risk_score"] <= 1.0
+
+
+# --- scope-aware rule attribution -----------------------------------------------------------
+# anomaly() returns rule hits for every account in the scoped rows, counterparties included.
+# Attributing one of those to the subject writes a factually wrong flags row.
+
+def _mixed_hits(subject="ACC1", other="OTHER9"):
+    payload = make_anomaly(anomaly_score=0.0, scope={"account_id": subject})
+    payload["rule_hits"] = [
+        {"account": other, "rule": "SCATTER-GATHER", "score": 1.0, "evidence": {}},
+        {"account": subject, "rule": "FAN-IN", "score": 1.0, "evidence": {}},
+    ]
+    return payload
+
+
+def test_counterparty_rule_is_not_attributed_to_the_subject():
+    result = risk(_mixed_hits())
+    assert result["pattern_detected"] == "FAN-IN"
+    assert result["risk_level"] == "LOW"
+
+
+def test_counterparty_rule_does_not_inflate_the_score():
+    subject_only = make_anomaly(anomaly_score=0.0, rules=[("FAN-IN", 1.0)])
+    assert risk(_mixed_hits())["risk_score"] == pytest.approx(risk(subject_only)["risk_score"])
+
+
+def test_counterparty_rules_are_still_reported_as_context():
+    signals = risk(_mixed_hits())["contributing_signals"]
+    assert [h["rule"] for h in signals["counterparty_rules"]] == ["SCATTER-GATHER"]
+    assert signals["counterparty_rules"][0]["account"] == "OTHER9"
+
+
+def test_subject_with_no_hits_of_its_own_gets_no_pattern():
+    payload = make_anomaly(anomaly_score=0.0, scope={"account_id": "ACC1"})
+    payload["rule_hits"] = [
+        {"account": "OTHER9", "rule": "SCATTER-GATHER", "score": 1.0, "evidence": {}},
+    ]
+    result = risk(payload)
+    assert result["pattern_detected"] is None
+    assert result["contributing_signals"]["rule_component"] == 0.0
+
+
+def test_scopeless_query_still_uses_every_hit():
+    """With no account in scope there is no subject to attribute against, so all hits count."""
+    payload = make_anomaly(anomaly_score=0.0, scope={"date_range": ["a", "b"]})
+    payload["rule_hits"] = [
+        {"account": "ANY1", "rule": "SCATTER-GATHER", "score": 1.0, "evidence": {}},
+    ]
+    assert risk(payload)["pattern_detected"] == "SCATTER-GATHER"

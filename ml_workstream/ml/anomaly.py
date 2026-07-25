@@ -144,6 +144,7 @@ def anomaly(scope: dict, method: str = "all") -> dict:
             # without re-querying. Not added to _ID_COLUMNS — that would duplicate the
             # column in the SELECT and give the frame two columns of the same name.
             row["is_self_loop"] = bool(df.iloc[i]["is_self_loop_i"])
+            row["currency_mismatch"] = bool(df.iloc[i]["currency_mismatch_i"])
             row["payment_format_risk"] = float(df.iloc[i]["payment_format_risk"])
             row["anomaly_score"] = round(float(combined[i]), 4)
             row["method_scores"] = {k: round(float(v[i]), 4) for k, v in per_row.items()}
