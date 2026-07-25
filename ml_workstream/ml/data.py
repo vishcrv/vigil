@@ -11,7 +11,9 @@ import duckdb
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = os.environ.get("DATA_DIR", str(REPO_ROOT / "data"))
-ENRICHED_PATH = os.path.join(DATA_DIR, "HI-Small_Enriched.parquet")
+# feature_eng (Phase 3) reads the Agent_Ready deliverable, not Enriched directly — see
+# scripts/enrich.py, which writes both from the same DataFrame.
+ENRICHED_PATH = os.path.join(DATA_DIR, "HI-Small_Agent_Ready.parquet")
 
 
 @lru_cache(maxsize=1)

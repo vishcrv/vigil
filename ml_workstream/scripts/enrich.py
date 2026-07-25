@@ -19,6 +19,7 @@ TRANS_PATH = str(REPO_ROOT / "HI-Small_Trans.csv")
 ACCOUNTS_PATH = str(REPO_ROOT / "HI-Small_accounts.csv")
 PATTERNS_PATH = str(REPO_ROOT / "HI-Small_Patterns.txt")
 OUT_PATH = str(REPO_ROOT / "data" / "HI-Small_Enriched.parquet")
+AGENT_READY_PATH = str(REPO_ROOT / "data" / "HI-Small_Agent_Ready.parquet")
 
 TRANS_COLS = [
     "Timestamp", "From Bank", "From Account", "To Bank", "To Account",
@@ -164,6 +165,14 @@ def main():
 
     print(f"writing {OUT_PATH} ...")
     df.to_parquet(OUT_PATH, index=False)
+
+    # Agent_Ready = same table as Enriched (spec.md line 149 / ml_spec.md Phase 3 name both as
+    # deliverables of this one script, but Phase 3 defines no additional precomputed columns —
+    # "anything genuinely query-time-only... doesn't belong precomputed", so there's nothing to
+    # add here). Written as its own file so the two named deliverables both exist on disk and
+    # feature_eng (Phase 3's tool) reads the Agent_Ready path, not Enriched, per line 79.
+    print(f"writing {AGENT_READY_PATH} ...")
+    df.to_parquet(AGENT_READY_PATH, index=False)
     print(f"done. {len(df):,} rows, {len(df.columns)} columns.")
 
     return df
