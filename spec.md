@@ -247,6 +247,8 @@ A single `aml_agent.db` file, stdlib `sqlite3`, no server. Two tables:
 - `id`: primary key, integer autoincrement
 - `query_id`: foreign key → `queries.id`
 - `customer_id`, `transaction_id`
+- `amount`, `timestamp`: added during Phase 0/4 implementation — without them a persisted flag can't
+  be re-rendered (the UI table shows amount, the temporal chart plots the transaction timestamp)
 - `risk_level`, `pattern_detected`, `anomaly_score`, `explanation`
 - `escalation_action`: the agent's *recommended* action (MONITOR/REVIEW/REPORT), set at insert time
 - `escalated_at`: nullable; set by `POST /api/v1/escalate` when a judge actually acts on it,
@@ -254,6 +256,17 @@ A single `aml_agent.db` file, stdlib `sqlite3`, no server. Two tables:
 
 No soft-delete, no retention/purge logic. This is a single-demo-run audit log, not a production
 compliance system; rows just accumulate for the life of the local `aml_agent.db` file.
+
+> **Contract note (Phase 0/4):** `amount` and `timestamp` above were not in this spec's original
+> `flags` list. Both were added during implementation and are genuinely needed, not speculative: the
+> "Frontend Pages & Routes" section below puts **amount** in the flagged-items table, and the temporal
+> risk chart it also asks for needs a **timestamp** per flagged item. They are persisted as `flags`
+> columns (`amount REAL`, `timestamp TEXT`), not merely returned in the API response.
+>
+> **Known limitation, accepted:** `POST /api/v1/escalate` overwrites `escalation_action` with the
+> human's chosen action, so the agent's *original* recommendation is not preserved after someone
+> escalates. Fine for a single-run demo audit log. Surfacing "agent said REPORT, human downgraded to
+> REVIEW" would need a third column; deliberately not built.
 
 > Indexes: `flags.query_id` (FK lookup), `flags.transaction_id` and `flags.customer_id` (the
 > lookups `/escalate` and any future customer-history view would use).
