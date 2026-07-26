@@ -224,7 +224,9 @@ def test_runaway_tool_calling_is_capped():
 
     client = Forever()
     result = tool_calling_loop(client, "loop forever")
-    assert Forever.calls == MAX_ITERATIONS
+    # MAX_ITERATIONS tool-calling turns, plus the one salvage turn that asks the model to
+    # answer from what it already has once the budget is spent.
+    assert Forever.calls == MAX_ITERATIONS + 1
     AgentResult.model_validate(result.model_dump())
 
 

@@ -18,7 +18,10 @@ from ml.tools import TOOL_SCHEMAS, TOOLS as STUBS
 from pydantic import ValidationError
 from schemas import AgentResult, ExecutionSummary, FlaggedItem, SkippedTool
 
-MAX_ITERATIONS = 8
+# A pattern search costs one `anomaly` plus `risk`+`explain` per account reported, so three
+# accounts is already 7 turns before the model has said anything. At 8 the loop ran out mid-chain
+# and returned an empty envelope.
+MAX_ITERATIONS = 14
 
 # Cap on one tool result's serialised size before it goes into the context. A real `eda` over
 # ~5M rows can return far more than the model can read, and an unbounded result is both a
@@ -26,12 +29,59 @@ MAX_ITERATIONS = 8
 MAX_TOOL_RESULT_CHARS = 20_000
 
 
+def _dataset_window() -> str | None:
+    """Actual first/last timestamp, read from the data rather than hardcoded.
+
+    The model needs an anchor for relative time. Without one it cannot resolve "the last 30
+    days" — the data ends in September 2022 and wall-clock now is years later, so the honest
+    reading of that phrase is an empty window, and the agent answers that it found nothing.
+    """
+    try:
+        from ml.data import get_connection
+
+        low, high = get_connection().execute(
+            'SELECT min("Timestamp"), max("Timestamp") FROM enriched'
+        ).fetchone()
+        return f"{low} to {high}" if low and high else None
+    except Exception:  # noqa: BLE001 - no data yet is not a reason to fail startup
+        return None
+
+
+_WINDOW = _dataset_window()
+
+_DATA_FACTS = (
+    f"""
+Dataset coverage: {_WINDOW}. Relative time expressions from the analyst ("the last 30 days",
+"this month", "recently") are relative to the END OF THE DATA, not to today's date. Anchor them
+to the latest timestamp above and pass an explicit date_range. Never report an empty result on
+the grounds that a requested window lies in the past — resolve it against the data and search.
+"""
+    if _WINDOW
+    else ""
+) + """
+Named motifs the rule engine detects: FAN-OUT, FAN-IN, CYCLE, GATHER-SCATTER, SCATTER-GATHER,
+BIPARTITE, STACK, RANDOM. Other AML vocabulary is not unsupported — it maps onto these and onto
+the transaction fields:
+- structuring / smurfing -> many deliberately small transfers. Filter to small amounts over the
+  window and run the detectors on that slice; FAN-OUT and FAN-IN are the closest named motifs.
+- layering / pass-through / mule activity -> STACK, CYCLE, GATHER-SCATTER, SCATTER-GATHER.
+- integration / placement -> examine amount and payment-format distributions.
+A term not appearing as a literal label in the data is NEVER a reason to return no findings, and
+never the whole answer. Scope the slice, run `anomaly` on it, and report what the detectors and
+rules actually found. "There is no label called X" is a fact about the schema, not a finding.
+"""
+
 SYSTEM = """You are an AML (anti-money-laundering) detection agent operating over a transaction
 dataset. You are the agent; the person you are talking to is a human compliance analyst using you
 to investigate that dataset. Never describe the analyst as an AI or as the agent — if they ask who
 they are, they are the analyst operating this tool.
 
 Call the tools you need to answer the analyst's query — only those you need:
+- Questions about what the data *is* ("what data do we have", "what's in the dataset", "what
+  columns/fields are available", "what period does it cover", "what payment formats appear")
+  are in scope and need `eda`. Answer them with real figures — row counts, the date range, the
+  distribution over a column — not with a description of what you are able to do. Listing your
+  own capabilities instead of querying the dataset is never the right answer here.
 - Aggregate or counting questions ("how many", "which customers made N+ transactions over X")
   usually need only `eda`. A threshold or grouping question is answered by aggregation; it does
   not need ML anomaly detection.
@@ -41,11 +91,21 @@ Call the tools you need to answer the analyst's query — only those you need:
   30 days", "fan-out this month") should apply that filter and go straight to feature_eng ->
   anomaly -> risk -> explain on the filtered slice. Do not run a full-dataset `eda` sweep first;
   the query has already told you where to look.
+  `anomaly` over a slice returns `rule_hits` for many accounts. Do not stop there: take the top
+  3 accounts by hit score, and for EACH call `risk` and then `explain` scoped to that one
+  account (`{"account_id": "..."}`), so every account you intend to report has its own risk
+  level and explanation. Three accounts is the budget — prefer finishing three properly over
+  starting more and running out of turns.
 
+""" + _DATA_FACTS + """
 If the query is not a request to analyse transaction data — a greeting, small talk, a question
 about you or about the analyst, or anything otherwise out of scope — call NO tools at all, answer
 directly in `summary`, and return [] for flagged_items. Never invoke a tool merely to have data to
 talk about, and never quote dataset statistics in an answer that did not need them.
+
+A question about the dataset is never out of scope, however open-ended. "What data do we have" is
+a request to describe the data, so query it; only a question about *you* — what you are, what you
+can do — belongs in the no-tools case above.
 
 When you are done calling tools, reply with ONLY a JSON object (no prose, no code fences):
 {
@@ -63,7 +123,13 @@ When you are done calling tools, reply with ONLY a JSON object (no prose, no cod
     }
   ]
 }
-Use [] for flagged_items when nothing is suspicious. Every flagged item must come from tool output."""
+Use [] for flagged_items ONLY when the tools genuinely surfaced nothing suspicious. If your
+summary names accounts, cites rule hits, or describes suspicious activity, then `flagged_items`
+must contain those accounts — one entry each, populated from the `risk` and `explain` results.
+Describing findings in prose while returning [] leaves the analyst's flagged-items table empty
+and nothing to escalate, which reads as the run having failed. Every flagged item must come from
+tool output; if you have not run `risk` and `explain` for an account, run them before reporting
+it rather than inventing the fields."""
 
 
 def _json_safe(value):
@@ -133,14 +199,66 @@ def _dispatch(name: str, args: dict):
         return {"error": f"{name} failed: {type(e).__name__}: {e}"}
 
 
+def _extract_json_object(text: str) -> str | None:
+    """First balanced top-level {...} in `text`, or None.
+
+    Brace counting rather than a regex because the payload nests objects and the explanation
+    strings routinely contain braces and escaped quotes; a non-greedy regex stops at the first
+    inner `}` and a greedy one swallows trailing prose.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i, char in enumerate(text[start:], start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 def _parse_final(text: str) -> dict:
-    """The model's final JSON. Tolerate code fences and non-JSON prose."""
-    body = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    try:
-        parsed = json.loads(body)
-        return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+    """The model's final JSON envelope. Tolerates code fences and surrounding prose.
+
+    The prompt asks for "ONLY a JSON object", and a strict whole-string parse enforced that
+    literally: one line of preamble ("Here is the result:") or a trailing sign-off and the parse
+    failed, discarding intent, filters, summary and flagged_items in one go. The visible symptom
+    is an execution panel reading "unknown" with every skip reason falling back to the generic
+    default, while the tools clearly ran — so the run looks broken even though the analysis
+    succeeded. Smaller models add that prose often enough that this has to be tolerated.
+    """
+    body = text.strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[-1] if "\n" in body else body
+        body = body.removeprefix("json").removeprefix("```").strip()
+    body = body.removesuffix("```").strip()
+
+    for candidate in (body, _extract_json_object(body)):
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
 def tool_calling_loop(client, query: str) -> AgentResult:
@@ -167,6 +285,23 @@ def tool_calling_loop(client, query: str) -> AgentResult:
             )
         messages.append({"role": "assistant", "content": reply.assistant_content})
         messages.append({"role": "user", "content": results})
+
+    # Leaving the loop with tool calls still pending means the iteration budget ran out before
+    # the model wrote its answer. `reply.text` is empty in that case, so everything downstream
+    # falls back: intent "unknown", no filters, no summary, no flagged items — a run that did all
+    # the analysis and reported none of it. Give it one turn to finish, with tools closed off.
+    if reply is not None and reply.tool_calls:
+        messages.append(
+            {
+                "role": "user",
+                "content": "Tool budget reached. Do not call any more tools. Reply now with "
+                "ONLY the final JSON object, populated from the tool results you already have.",
+            }
+        )
+        try:
+            reply = client.chat_with_tools(messages, TOOL_SCHEMAS, SYSTEM)
+        except Exception:  # noqa: BLE001 - a failed salvage must not lose the whole run
+            pass
 
     final = _parse_final(reply.text if reply else "")
     reasons = {s.get("name"): s.get("reason", "") for s in final.get("skipped", []) if isinstance(s, dict)}

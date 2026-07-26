@@ -100,9 +100,55 @@ def test_check_api_key_raises_when_key_missing(monkeypatch):
 
 
 def test_loop_caps_runaway_tool_requests():
+    """Bounded, and one turn past the tool budget rather than equal to it.
+
+    A model that never stops calling tools used to exhaust the loop with nothing written, so
+    the run reported no intent and no summary despite having done the work. The loop now spends
+    one final turn asking it to answer from the results it already has — that is the +1. What
+    the test guards is that the total stays bounded.
+    """
     client = ForeverClient()
     result = tool_calling_loop(client, "loop forever please")
 
-    assert client.calls == MAX_ITERATIONS
+    assert client.calls == MAX_ITERATIONS + 1
     AgentResult.model_validate(result.model_dump())
     assert result.execution_summary.tools_invoked == ["anomaly"]
+
+
+# --- final-envelope parsing ---------------------------------------------------------------
+
+@pytest.mark.parametrize("raw", [
+    '{"intent": "x"}',
+    '```json\n{"intent": "x"}\n```',
+    '```\n{"intent": "x"}\n```',
+    'Here is the result:\n{"intent": "x"}',
+    '{"intent": "x"}\nLet me know if you need anything else.',
+    'Sure!\n```json\n{"intent": "x"}\n```\nHope that helps.',
+])
+def test_final_envelope_survives_prose_and_fences(raw):
+    """The prompt asks for "ONLY a JSON object"; smaller models add a preamble or sign-off
+    anyway. A strict whole-string parse discarded intent, filters, summary and flagged_items
+    together, surfacing as an execution panel reading "unknown" while the tools had clearly
+    run."""
+    from agent.loop import _parse_final
+
+    assert _parse_final(raw)["intent"] == "x"
+
+
+def test_final_envelope_handles_nesting_and_braces_inside_strings():
+    from agent.loop import _parse_final
+
+    parsed = _parse_final(
+        'text {"intent": "x", "filters": {"a": {"b": 1}}, '
+        '"summary": "used {curly} and \\"quotes\\""} trailing'
+    )
+    assert parsed["filters"] == {"a": {"b": 1}}
+    assert parsed["summary"] == 'used {curly} and "quotes"'
+
+
+@pytest.mark.parametrize("raw", ["I could not complete that.", "[1, 2, 3]", "", "{unclosed"])
+def test_final_envelope_falls_back_to_empty_on_unparseable(raw):
+    """An empty dict is the signal the loop uses to fall back to the raw reply text."""
+    from agent.loop import _parse_final
+
+    assert _parse_final(raw) == {}
