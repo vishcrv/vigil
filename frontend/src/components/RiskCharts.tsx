@@ -1,5 +1,5 @@
 import Plot from 'react-plotly.js'
-import type { FlaggedItem } from '../types'
+import type { Evidence, FlaggedItem } from '../types'
 import { useTheme } from '../theme'
 
 // Plotly's color parser doesn't understand oklch(), so these are hex
@@ -25,17 +25,6 @@ const PALETTE = {
   },
 } as const
 
-const fallback = '#94A3B8'
-
-function countBy<T>(items: T[], key: (item: T) => string) {
-  const counts = new Map<string, number>()
-  for (const item of items) {
-    const k = key(item)
-    counts.set(k, (counts.get(k) ?? 0) + 1)
-  }
-  return counts
-}
-
 function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="glass rounded-xl p-5">
@@ -47,69 +36,101 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
   )
 }
 
-export default function RiskCharts({ items }: { items: FlaggedItem[] }) {
+export default function RiskCharts({
+  items,
+  evidence,
+}: {
+  items: FlaggedItem[]
+  evidence: Evidence | null
+}) {
   const { resolved } = useTheme()
   const colors = PALETTE[resolved]
 
-  const byRisk = countBy(items, (i) => i.risk_level)
-  const byDay = new Map([...countBy(items, (i) => i.timestamp.slice(0, 10))].sort())
+  // These used to plot `items` itself: a bar per risk level, and flags per day. A run flags one
+  // account most of the time, so both rendered as a single bar of height one and a single dot —
+  // accurate and completely uninformative. They now plot the evidence behind the flags: what the
+  // flagged accounts actually did, and which motifs fired. With no evidence there is nothing
+  // worth drawing, so the caller renders nothing.
+  const daily = evidence?.daily_activity ?? []
+  const mix = evidence?.rule_mix ?? []
+  if (daily.length === 0 && mix.length === 0) return null
+
+  const flaggedDays = new Set(items.map((i) => i.timestamp.slice(0, 10).replaceAll('-', '/')))
+
   const riskColorMap: Record<string, string> = {
     CRITICAL: colors.critical,
     HIGH: colors.high,
     MEDIUM: colors.medium,
     LOW: colors.low,
   }
+  const topRisk = items[0]?.risk_level ?? 'HIGH'
+  const accent = riskColorMap[topRisk] ?? colors.primary
 
   const layout = {
-    margin: { l: 40, r: 12, t: 8, b: 36 },
+    margin: { l: 52, r: 12, t: 8, b: 40 },
     height: 240,
     paper_bgcolor: 'transparent',
     plot_bgcolor: 'transparent',
     font: { family: 'inherit', size: 11, color: colors.text },
     showlegend: false,
     xaxis: { gridcolor: colors.grid, zeroline: false, linecolor: colors.grid },
-    yaxis: { title: { text: 'Flags' }, dtick: 1, gridcolor: colors.grid, zeroline: false },
+    yaxis: { gridcolor: colors.grid, zeroline: false },
   } as const
 
   const config = { displayModeBar: false, responsive: true } as const
+  const who =
+    evidence && evidence.accounts.length === 1
+      ? evidence.accounts[0]
+      : `${evidence?.accounts.length ?? 0} flagged accounts`
 
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      <ChartCard title="Risk distribution">
-        <Plot
-          config={config}
-          data={[
-            {
-              type: 'bar',
-              x: [...byRisk.keys()],
-              y: [...byRisk.values()],
-              marker: { color: [...byRisk.keys()].map((r) => riskColorMap[r] ?? fallback) },
-              hovertemplate: '%{x}: %{y} flagged<extra></extra>',
-            },
-          ]}
-          layout={layout}
-          style={{ width: '100%' }}
-        />
-      </ChartCard>
+      {daily.length > 0 && (
+        <ChartCard title={`Daily activity — ${who}`}>
+          <Plot
+            config={config}
+            data={[
+              {
+                type: 'bar',
+                x: daily.map((p) => p.label),
+                y: daily.map((p) => p.value),
+                // The day a flagged transaction landed on is picked out against the account's
+                // own baseline, which is the comparison that makes the chart worth reading.
+                marker: {
+                  color: daily.map((p) => (flaggedDays.has(p.label) ? accent : colors.grid)),
+                },
+                hovertemplate: '%{x}: %{y:,} transactions<extra></extra>',
+              },
+            ]}
+            layout={{ ...layout, yaxis: { ...layout.yaxis, title: { text: 'Transactions' } } }}
+            style={{ width: '100%' }}
+          />
+        </ChartCard>
+      )}
 
-      <ChartCard title="Flagged transactions over time">
-        <Plot
-          config={config}
-          data={[
-            {
-              type: 'scatter',
-              mode: 'lines+markers',
-              x: [...byDay.keys()],
-              y: [...byDay.values()],
-              line: { color: colors.primary },
-              marker: { size: 7, color: colors.primary },
-              hovertemplate: '%{x}: %{y} flagged<extra></extra>',
-            },
-          ]}
-          layout={layout}
-          style={{ width: '100%' }}
-        />
-      </ChartCard>
+      {mix.length > 0 && (
+        <ChartCard title="Motifs triggered">
+          <Plot
+            config={config}
+            data={[
+              {
+                type: 'bar',
+                orientation: 'h',
+                x: mix.map((p) => p.value),
+                y: mix.map((p) => p.label),
+                marker: { color: accent },
+                hovertemplate: '%{y}: %{x} rule hit(s)<extra></extra>',
+              },
+            ]}
+            layout={{
+              ...layout,
+              margin: { ...layout.margin, l: 110 },
+              xaxis: { ...layout.xaxis, title: { text: 'Rule hits' }, dtick: 1 },
+            }}
+            style={{ width: '100%' }}
+          />
+        </ChartCard>
+      )}
     </div>
   )
 }

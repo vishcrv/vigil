@@ -34,9 +34,38 @@ export interface EscalatedFlag extends FlaggedItem {
   query_timestamp: string | null
 }
 
+export interface EvidencePoint {
+  label: string
+  value: number
+}
+
+/** Context behind the flags, derived server-side. Absent when nothing was flagged. */
+export interface Evidence {
+  accounts: string[]
+  daily_activity: EvidencePoint[]
+  rule_mix: EvidencePoint[]
+}
+
 export interface AgentResult {
   query: string
   summary: string
   execution_summary: ExecutionSummary
   flagged_items: FlaggedItem[]
+  evidence: Evidence | null
+}
+
+/** Aggregates over the whole audit trail (GET /stats), not just the current session. */
+export interface StatPoint {
+  label: string
+  value: number
+}
+
+export interface DashboardStats {
+  totals: { queries: number; flags: number; escalated: number }
+  by_risk: StatPoint[]
+  by_pattern: StatPoint[]
+  top_accounts: StatPoint[]
+  queries_by_day: StatPoint[]
+  by_tool: StatPoint[]
+  recent_queries: { label: string; intent: string | null; timestamp: string }[]
 }

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from agent.loop import tool_calling_loop
 from agent.providers import ProviderError, get_client
 from db import (
+    dashboard_stats,
     escalate_flag,
     get_connection,
     insert_flags,
@@ -57,3 +58,10 @@ def escalations() -> list[EscalatedFlag]:
     """
     with get_connection() as conn:
         return [EscalatedFlag.model_validate(row) for row in list_escalated_flags(conn)]
+
+
+@router.get("/stats")
+def stats() -> dict:
+    """Dashboard aggregates over every run recorded so far."""
+    with get_connection() as conn:
+        return dashboard_stats(conn)

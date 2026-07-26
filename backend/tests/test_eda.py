@@ -273,3 +273,46 @@ def test_every_aggregation_name_is_a_known_template():
 def test_allow_lists_are_non_empty_for_every_source():
     for source, table in COLUMNS.items():
         assert table, source
+
+
+# --- min_value (HAVING) ---------------------------------------------------------------------
+
+def test_min_value_filters_groups_by_their_aggregate():
+    """"Customers with 10+ transactions" needs a threshold on the aggregate, not a ranking.
+
+    Without HAVING the only available answer was "here are the top senders", which looks
+    plausible and answers a different question.
+    """
+    base = {
+        "operation": "top_accounts", "side": "sender", "aggregation": "count", "limit": 1000,
+        "filters": [{"column": "amount_paid", "op": "<", "value": 10000}],
+    }
+    loose = eda({**base, "min_value": 1000})
+    strict = eda({**base, "min_value": 100000})
+
+    assert len(loose["records"]) > len(strict["records"]) >= 1
+    assert all(r["value"] >= 1000 for r in loose["records"])
+    assert all(r["value"] >= 100000 for r in strict["records"])
+
+
+def test_min_value_is_bound_as_a_parameter_not_interpolated():
+    result = eda({"operation": "top_accounts", "aggregation": "count", "min_value": 25})
+    assert "HAVING" in result["sql"]
+    assert "25" not in result["sql"], "threshold must be a bound ? parameter"
+    assert 25 in result["sql_parameters"]
+
+
+def test_min_value_applies_to_group_operation_too():
+    result = eda({"operation": "group", "dimension": "payment_format",
+                  "aggregation": "count", "min_value": 500000})
+    assert all(r["value"] >= 500000 for r in result["records"])
+
+
+def test_min_value_absent_means_no_having_clause():
+    assert "HAVING" not in eda({"operation": "top_accounts", "aggregation": "count"})["sql"]
+
+
+@pytest.mark.parametrize("bad", ["ten", None, True, [10]])
+def test_non_numeric_min_value_is_rejected(bad):
+    assert "min_value" in eda({"operation": "top_accounts", "aggregation": "count",
+                               "min_value": bad})["error"]

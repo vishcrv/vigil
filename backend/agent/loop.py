@@ -16,7 +16,14 @@ import math
 
 from ml.tools import TOOL_SCHEMAS, TOOLS as STUBS
 from pydantic import ValidationError
-from schemas import AgentResult, ExecutionSummary, FlaggedItem, SkippedTool
+from schemas import (
+    AgentResult,
+    Evidence,
+    EvidencePoint,
+    ExecutionSummary,
+    FlaggedItem,
+    SkippedTool,
+)
 
 # A pattern search costs one `anomaly` plus `risk`+`explain` per account reported, so three
 # accounts is already 7 turns before the model has said anything. At 8 the loop ran out mid-chain
@@ -84,7 +91,14 @@ Call the tools you need to answer the analyst's query — only those you need:
   own capabilities instead of querying the dataset is never the right answer here.
 - Aggregate or counting questions ("how many", "which customers made N+ transactions over X")
   usually need only `eda`. A threshold or grouping question is answered by aggregation; it does
-  not need ML anomaly detection.
+  not need ML anomaly detection. "N or more" is a threshold on the aggregate, so pass
+  `min_value` — ranking the top accounts instead answers a different question.
+- When the analyst asks to list, show or give examples of transactions, write the actual rows
+  out in `summary` — account, amount, timestamp, payment format for each. Your `summary` is the
+  ENTIRE answer the analyst sees. Tool output is not displayed to them, so phrases like "above
+  is a sample", "the following transactions" or "a sample was queried successfully" refer to
+  something that does not exist on their screen and read as the tool having failed. Never write
+  "above" or "below". Transcribe the concrete values, then give the total that matched.
 - Single-entity suspicion checks ("is customer X suspicious") need feature_eng -> anomaly -> risk
   -> explain, scoped to that entity. They do not need `eda`.
 - A pattern search already narrowed by a time window or a named motif ("structuring in the last
@@ -261,10 +275,105 @@ def _parse_final(text: str) -> dict:
     return {}
 
 
+def _remember_finding(call: dict, result, risk_results: dict, explanations: dict) -> None:
+    """Index `risk` and `explain` output by the account it concerns."""
+    if not isinstance(result, dict) or "error" in result:
+        return
+    if call["name"] == "risk" and result.get("customer_id"):
+        risk_results[str(result["customer_id"])] = result
+    elif call["name"] == "explain" and result.get("explanation"):
+        # explain() takes the risk result but does not echo the account, so the account comes
+        # from the arguments the model passed in.
+        args = call.get("input") or {}
+        account = (args.get("risk_result") or {}).get("customer_id")
+        if account:
+            explanations[str(account)] = str(result["explanation"])
+
+
+def _synthesise_flags(risk_results: dict, explanations: dict) -> list[FlaggedItem]:
+    """Flags rebuilt from tool output, for when the model reported findings in prose only.
+
+    LOW is skipped deliberately: "we looked and it is fine" is a real answer, and turning it
+    into a flag would fabricate a finding rather than recover one.
+    """
+    rebuilt = []
+    for account, result in risk_results.items():
+        if result.get("risk_level") in (None, "LOW"):
+            continue
+        try:
+            rebuilt.append(
+                FlaggedItem(
+                    customer_id=account,
+                    transaction_id=result.get("transaction_id") or f"acct_{account}",
+                    amount=result.get("amount") or 0.0,
+                    timestamp=result.get("timestamp") or f"{_WINDOW.split(' to ')[-1]}".replace(
+                        "/", "-"
+                    ).replace(" ", "T"),
+                    risk_level=result["risk_level"],
+                    pattern_detected=result.get("pattern_detected") or "NONE",
+                    anomaly_score=result.get("anomaly_score") or 0.0,
+                    explanation=explanations.get(account)
+                    or "Risk assessed from detector and rule output; no explanation returned.",
+                    escalation_action=result.get("escalation_action") or "REVIEW",
+                )
+            )
+        except ValidationError:
+            continue
+    return rebuilt
+
+
+def _build_evidence(flagged: list[FlaggedItem]) -> Evidence | None:
+    """Context for the charts: what the flagged accounts actually did, and why they fired.
+
+    Deterministic DuckDB through the same `eda` tool the agent uses — no extra model calls, so
+    this costs nothing in tokens or latency beyond two indexed queries. Returns None rather
+    than empty series when there is nothing to plot, so the UI can omit the charts entirely
+    instead of rendering empty axes.
+    """
+    accounts = sorted({item.customer_id for item in flagged if item.customer_id})
+    if not accounts:
+        return None
+
+    def _series(spec: dict, key: str) -> list[EvidencePoint]:
+        result = _dispatch("eda", {"query_spec": spec})
+        if "error" in result:
+            return []
+        return [
+            EvidencePoint(label=str(row[key]), value=float(row["value"]))
+            for row in result.get("records", [])
+            if row.get(key) is not None and isinstance(row.get("value"), (int, float))
+        ]
+
+    daily = _series(
+        {
+            "operation": "time_series", "interval": "day", "aggregation": "count",
+            "filters": [{"column": "from_account", "op": "in", "value": accounts[:100]}],
+            "limit": 60,
+        },
+        "bucket",
+    )
+    mix = _series(
+        {
+            "operation": "group", "source": "rule_hits", "dimension": "rule",
+            "aggregation": "count",
+            "filters": [{"column": "account", "op": "in", "value": accounts[:100]}],
+            "limit": 10,
+        },
+        "dimension",
+    )
+    if not daily and not mix:
+        return None
+    return Evidence(accounts=accounts, daily_activity=daily, rule_mix=mix)
+
+
 def tool_calling_loop(client, query: str) -> AgentResult:
     """Full agent run: intent parse -> tool selection -> dispatch -> validated AgentResult."""
     messages = [{"role": "user", "content": query}]
     invoked: list[str] = []  # the transparency feed: what actually got dispatched, in order
+    # Tool output kept as it goes past, so a flag can be built from what the tools actually
+    # returned instead of from the model's retyping of it. See _synthesise_flags.
+    risk_results: dict[str, dict] = {}
+    explanations: dict[str, str] = {}
     reply = None
 
     for _ in range(MAX_ITERATIONS):
@@ -276,6 +385,7 @@ def tool_calling_loop(client, query: str) -> AgentResult:
         for call in reply.tool_calls:
             result = _dispatch(call["name"], call["input"])
             invoked.append(call["name"])
+            _remember_finding(call, result, risk_results, explanations)
             results.append(
                 {
                     "type": "tool_result",
@@ -318,6 +428,14 @@ def tool_calling_loop(client, query: str) -> AgentResult:
         except ValidationError:
             continue  # the model made up a malformed item; drop it rather than fail the run
 
+    # The model routinely describes a CRITICAL account in prose and then returns [] here, which
+    # leaves the table empty and nothing to escalate — the run looks like it failed when the
+    # analysis in fact succeeded. Transcribing nine fields per flag is the unreliable step, and
+    # it is one the model does not need to perform: `risk` and `explain` already returned
+    # exactly those fields. Rebuild from the tool output when the model omitted it.
+    if not flagged:
+        flagged = _synthesise_flags(risk_results, explanations)
+
     return AgentResult(
         query=query,
         summary=final.get("summary") or (reply.text if reply else ""),
@@ -328,4 +446,5 @@ def tool_calling_loop(client, query: str) -> AgentResult:
             tools_skipped=skipped,
         ),
         flagged_items=flagged,
+        evidence=_build_evidence(flagged),
     )

@@ -90,3 +90,58 @@ def test_escalate_flag(tmp_path):
     assert rows[second]["escalation_action"] == "MONITOR"
 
     assert escalate_flag(conn, 9999, "REPORT") is False
+
+
+def test_dashboard_stats_aggregates_the_audit_trail(tmp_path):
+    """The dashboard reads across every session, so it counts in SQL rather than in the client
+    (which only ever holds the current conversation)."""
+    from db import dashboard_stats
+
+    conn = get_connection(str(tmp_path / "stats.db"))
+    init_db(conn)
+    result = RESULT.model_copy(deep=True)
+    query_id = insert_query(conn, result)
+    flag_ids = insert_flags(conn, query_id, result.flagged_items)
+    escalate_flag(conn, flag_ids[0], "REPORT")
+
+    stats = dashboard_stats(conn)
+
+    assert stats["totals"] == {
+        "queries": 1,
+        "flags": len(flag_ids),
+        "escalated": 1,
+    }
+    assert {row["label"] for row in stats["by_risk"]} == {
+        item.risk_level for item in result.flagged_items
+    }
+    # tools_invoked is stored as a JSON array per query row, so it is counted in Python.
+    assert {row["label"] for row in stats["by_tool"]} == set(
+        result.execution_summary.tools_invoked
+    )
+    assert stats["recent_queries"][0]["label"] == result.query
+
+
+def test_dashboard_stats_on_an_empty_database(tmp_path):
+    from db import dashboard_stats
+
+    conn = get_connection(str(tmp_path / "empty.db"))
+    init_db(conn)
+    stats = dashboard_stats(conn)
+
+    assert stats["totals"] == {"queries": 0, "flags": 0, "escalated": 0}
+    assert stats["by_risk"] == [] and stats["by_tool"] == []
+
+
+def test_dashboard_stats_excludes_the_none_pattern_placeholder(tmp_path):
+    """`pattern_detected` is "NONE" when no motif fired — a real value in the flags table, but
+    not a motif, so charting it as one would be misleading."""
+    from db import dashboard_stats
+
+    conn = get_connection(str(tmp_path / "none.db"))
+    init_db(conn)
+    result = RESULT.model_copy(deep=True)
+    for item in result.flagged_items:
+        item.pattern_detected = "NONE"
+    insert_flags(conn, insert_query(conn, result), result.flagged_items)
+
+    assert dashboard_stats(conn)["by_pattern"] == []

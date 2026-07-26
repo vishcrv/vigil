@@ -1,7 +1,12 @@
 // Client for the two backend routes (backend/api/routes/agent.py).
 // Shapes mirror backend/schemas.py — the frozen contract, see types.ts.
 
-import type { AgentResult, EscalatedFlag, EscalationAction } from './types'
+import type {
+  AgentResult,
+  DashboardStats,
+  EscalatedFlag,
+  EscalationAction,
+} from './types'
 
 // 127.0.0.1 rather than localhost, matching .env.example: uvicorn binds IPv4 by default, but
 // browsers resolve "localhost" to IPv6 ::1 first, which is refused before reaching the server.
@@ -46,6 +51,10 @@ async function get<T>(path: string): Promise<T> {
 /** The audit trail, read from SQLite — survives reloads and spans conversations. */
 export function getEscalations(): Promise<EscalatedFlag[]> {
   return get<EscalatedFlag[]>('/api/v1/escalations')
+}
+
+export function getStats(): Promise<DashboardStats> {
+  return get<DashboardStats>('/api/v1/stats')
 }
 
 export function analyze(query: string): Promise<AgentResult> {

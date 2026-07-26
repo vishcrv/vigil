@@ -6,6 +6,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldHalf,
+  Trash2,
 } from 'lucide-react'
 import type { ChatEntry } from '../../App'
 import ThemeToggle from './ThemeToggle'
@@ -52,9 +53,13 @@ function StatTile({
 export default function Sidebar({
   entries,
   onSelectQuery,
+  onClear,
 }: {
   entries: ChatEntry[]
-  onSelectQuery: (query: string) => void
+  // Takes the entry id, not the query text: clicking a past query used to re-seed the composer
+  // and re-run it, which spends provider quota to reproduce an answer already on screen.
+  onSelectQuery: (entryId: string) => void
+  onClear: () => void
 }) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(STORAGE_KEY) === '1')
 
@@ -116,9 +121,22 @@ export default function Sidebar({
 
       {!collapsed && (
         <div className="mt-6 flex min-h-0 flex-1 flex-col px-4">
-          <span className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            Recent queries
-          </span>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+              Recent queries
+            </span>
+            {entries.length > 0 && (
+              <button
+                className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                onClick={onClear}
+                title="Clear this conversation"
+                type="button"
+              >
+                <Trash2 className="size-3" />
+                Clear
+              </button>
+            )}
+          </div>
 
           {entries.length === 0 ? (
             <p className="text-xs leading-relaxed text-muted-foreground/70">
@@ -130,7 +148,7 @@ export default function Sidebar({
                 <li key={entry.id}>
                   <button
                     className="w-full truncate rounded-md px-2 py-1.5 text-left text-xs text-foreground/80 transition-colors duration-150 hover:bg-accent hover:text-foreground"
-                    onClick={() => onSelectQuery(entry.query)}
+                    onClick={() => onSelectQuery(entry.id)}
                     title={entry.query}
                     type="button"
                   >

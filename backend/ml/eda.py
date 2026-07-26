@@ -242,6 +242,23 @@ def _agg_expr(aggregation: str, col: str) -> str:
     return template.format(col=col) if "{col}" in template else f"{template}({col})"
 
 
+def _min_value(spec: dict, errors: list[str]) -> float | None:
+    """Threshold on the aggregated value, i.e. SQL HAVING.
+
+    Without it there is no way to express "customers who made 10 or more transactions": the
+    caller can rank accounts by count, but not filter to those clearing a count. The agent was
+    answering that question by listing the top senders instead, which is a different question
+    with a plausible-looking answer.
+    """
+    if "min_value" not in spec:
+        return None
+    raw = spec["min_value"]
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        errors.append("min_value must be numeric")
+        return None
+    return float(raw)
+
+
 def _limit(spec: dict, errors: list[str]) -> int:
     raw = spec.get("limit", DEFAULT_LIMIT)
     if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
@@ -273,6 +290,7 @@ def eda(query_spec: dict) -> dict:
     try:
         where_sql, params, filters_norm = _build_filters(source, query_spec.get("filters"), errors)
         limit = _limit(query_spec, errors)
+        min_value = _min_value(query_spec, errors)
         table = SOURCES[source]
 
         order = query_spec.get("order", "desc")
@@ -322,9 +340,12 @@ def eda(query_spec: dict) -> dict:
                     f"SELECT {dim_col} AS dimension, "
                     f"{_agg_expr(aggregation, measure_col)} AS value "
                     f"FROM {table} WHERE {where_sql} "
-                    f"GROUP BY {dim_col} ORDER BY value {order_sql} LIMIT ?"
+                    f"GROUP BY {dim_col} "
+                    + ("HAVING " + _agg_expr(aggregation, measure_col) + " >= ? "
+                       if min_value is not None else "")
+                    + f"ORDER BY value {order_sql} LIMIT ?"
                 )
-                exec_params = params + [limit]
+                exec_params = params + ([min_value] if min_value is not None else []) + [limit]
 
         elif operation == "time_series":
             if source != "transactions":
@@ -376,9 +397,12 @@ def eda(query_spec: dict) -> dict:
                     f"SELECT {acct_col} AS account, "
                     f"{_agg_expr(aggregation, measure_col)} AS value "
                     f"FROM {table} WHERE {where_sql} "
-                    f"GROUP BY {acct_col} ORDER BY value {order_sql} LIMIT ?"
+                    f"GROUP BY {acct_col} "
+                    + ("HAVING " + _agg_expr(aggregation, measure_col) + " >= ? "
+                       if min_value is not None else "")
+                    + f"ORDER BY value {order_sql} LIMIT ?"
                 )
-                exec_params = params + [limit]
+                exec_params = params + ([min_value] if min_value is not None else []) + [limit]
 
         elif operation == "sample":
             requested = query_spec.get("columns") or (

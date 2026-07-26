@@ -57,6 +57,29 @@ class EscalatedFlag(FlaggedItem):
     query_timestamp: datetime | None = None
 
 
+class EvidencePoint(BaseModel):
+    """One (label, value) pair in a chart series."""
+
+    label: str
+    value: float
+
+
+class Evidence(BaseModel):
+    """Context behind the flags, for the charts.
+
+    The charts used to plot `flagged_items` itself — a bar per risk level and flags per day.
+    A run typically flags one account, so that rendered as a single bar of height one and a
+    single dot: technically correct, informationally empty. These series describe the accounts
+    that were flagged instead of counting the flags, so there is something to actually see.
+
+    Derived server-side with DuckDB after the agent finishes; no extra model calls.
+    """
+
+    accounts: list[str] = []
+    daily_activity: list[EvidencePoint] = []   # transactions per day for those accounts
+    rule_mix: list[EvidencePoint] = []         # motif hits per rule, i.e. why they were flagged
+
+
 class AgentResult(BaseModel):
     """The full `POST /api/v1/analyze` response."""
 
@@ -64,6 +87,8 @@ class AgentResult(BaseModel):
     summary: str  # the agent's NL answer, carries aggregate queries that flag nothing
     execution_summary: ExecutionSummary
     flagged_items: list[FlaggedItem] = []
+    # Optional: absent when nothing was flagged, so the UI knows to render no charts at all.
+    evidence: Evidence | None = None
 
 
 class AnalyzeRequest(BaseModel):

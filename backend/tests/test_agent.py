@@ -152,3 +152,68 @@ def test_final_envelope_falls_back_to_empty_on_unparseable(raw):
     from agent.loop import _parse_final
 
     assert _parse_final(raw) == {}
+
+
+# --- flags rebuilt from tool output ---------------------------------------------------------
+
+def _risk_result(account="ACC1", level="CRITICAL"):
+    return {
+        "customer_id": account, "transaction_id": "tx_abc", "amount": 1234.5,
+        "timestamp": "2022-09-10T18:21:00", "risk_level": level,
+        "pattern_detected": "GATHER-SCATTER", "anomaly_score": 0.99,
+        "escalation_action": "REPORT",
+    }
+
+
+def test_flags_are_rebuilt_when_the_model_reports_findings_in_prose_only():
+    """The model repeatedly described a CRITICAL account and then returned [] for
+    flagged_items, leaving the table empty and nothing to escalate. Transcribing nine fields is
+    the step it gets wrong, and it is one the tools already did."""
+    from agent.loop import _synthesise_flags
+
+    flags = _synthesise_flags({"ACC1": _risk_result()}, {"ACC1": "because motifs fired"})
+
+    assert len(flags) == 1
+    assert flags[0].customer_id == "ACC1"
+    assert flags[0].risk_level == "CRITICAL"
+    assert flags[0].escalation_action == "REPORT"
+    assert flags[0].explanation == "because motifs fired"
+
+
+def test_low_risk_is_never_rebuilt_into_a_flag():
+    """"We checked and it is fine" is a real answer; promoting it would invent a finding."""
+    from agent.loop import _synthesise_flags
+
+    assert _synthesise_flags({"ACC1": _risk_result(level="LOW")}, {}) == []
+
+
+def test_rebuilt_flag_survives_a_missing_explanation():
+    from agent.loop import _synthesise_flags
+
+    flags = _synthesise_flags({"ACC1": _risk_result()}, {})
+    assert len(flags) == 1 and flags[0].explanation
+
+
+def test_findings_are_indexed_by_account_from_tool_traffic():
+    from agent.loop import _remember_finding
+
+    risk_results: dict = {}
+    explanations: dict = {}
+    _remember_finding({"name": "risk", "input": {}}, _risk_result(), risk_results, explanations)
+    _remember_finding(
+        {"name": "explain", "input": {"risk_result": {"customer_id": "ACC1"}}},
+        {"explanation": "motifs fired"},
+        risk_results,
+        explanations,
+    )
+
+    assert set(risk_results) == {"ACC1"}
+    assert explanations["ACC1"] == "motifs fired"
+
+
+def test_errored_tool_results_are_not_indexed():
+    from agent.loop import _remember_finding
+
+    risk_results: dict = {}
+    _remember_finding({"name": "risk", "input": {}}, {"error": "boom"}, risk_results, {})
+    assert risk_results == {}

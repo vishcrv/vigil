@@ -137,3 +137,62 @@ def list_escalated_flags(conn: sqlite3.Connection) -> list[dict]:
         """
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def dashboard_stats(conn: sqlite3.Connection) -> dict:
+    """Aggregates over the whole audit trail, for the dashboard.
+
+    Everything here is already recorded per `/analyze` run; none of it was surfaced anywhere.
+    Counting in SQL rather than in the client because the client only ever holds the current
+    session, and the point of the dashboard is what has happened across all of them.
+    """
+    def rows(sql: str) -> list[dict]:
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    totals = dict(
+        conn.execute(
+            """
+            SELECT (SELECT count(*) FROM queries)                              AS queries,
+                   (SELECT count(*) FROM flags)                                AS flags,
+                   (SELECT count(*) FROM flags WHERE escalated_at IS NOT NULL) AS escalated
+            """
+        ).fetchone()
+    )
+
+    # Tool usage lives as a JSON array per query row, so it is counted here rather than in SQL.
+    tool_counts: dict[str, int] = {}
+    for row in conn.execute("SELECT tools_invoked FROM queries").fetchall():
+        try:
+            for tool in json.loads(row["tools_invoked"] or "[]"):
+                tool_counts[str(tool)] = tool_counts.get(str(tool), 0) + 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    return {
+        "totals": totals,
+        "by_risk": rows(
+            "SELECT risk_level AS label, count(*) AS value FROM flags "
+            "GROUP BY risk_level ORDER BY value DESC"
+        ),
+        "by_pattern": rows(
+            "SELECT pattern_detected AS label, count(*) AS value FROM flags "
+            "WHERE pattern_detected IS NOT NULL AND pattern_detected != 'NONE' "
+            "GROUP BY pattern_detected ORDER BY value DESC LIMIT 10"
+        ),
+        "top_accounts": rows(
+            "SELECT customer_id AS label, count(*) AS value FROM flags "
+            "GROUP BY customer_id ORDER BY value DESC LIMIT 8"
+        ),
+        "queries_by_day": rows(
+            "SELECT substr(timestamp, 1, 10) AS label, count(*) AS value FROM queries "
+            "GROUP BY label ORDER BY label"
+        ),
+        "by_tool": [
+            {"label": name, "value": count}
+            for name, count in sorted(tool_counts.items(), key=lambda kv: -kv[1])
+        ],
+        "recent_queries": rows(
+            "SELECT query_text AS label, intent_detected AS intent, timestamp "
+            "FROM queries ORDER BY id DESC LIMIT 8"
+        ),
+    }

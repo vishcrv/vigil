@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { AlertCircle, MessageSquare, ShieldAlert } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertCircle, LayoutDashboard, MessageSquare, ShieldAlert } from 'lucide-react'
+import DashboardView from './components/DashboardView'
 import EscalationsView from './components/EscalationsView'
 import ExecutionSummaryPanel from './components/ExecutionSummaryPanel'
 import FlaggedItemsTable from './components/FlaggedItemsTable'
@@ -91,19 +92,38 @@ function AgentResponse({ result }: { result: AgentResult }) {
       {hasFlags && (
         <>
           <FlaggedItemsTable items={result.flagged_items} />
-          <RiskCharts items={result.flagged_items} />
+          <RiskCharts evidence={result.evidence} items={result.flagged_items} />
         </>
       )}
     </>
   )
 }
 
-type Tab = 'investigate' | 'escalations'
+type Tab = 'investigate' | 'escalations' | 'dashboard'
+
+// Survives a reload. A demo that loses its transcript on an accidental refresh is worse than
+// one that never had history; the flags themselves are already durable in SQLite, this just
+// keeps the conversation around them.
+const STORAGE_KEY = 'vigil.chat.v1'
+
+function loadEntries(): ChatEntry[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    // Drop anything still in flight when the page closed: it can never resolve.
+    return Array.isArray(parsed)
+      ? parsed.filter((e) => e && typeof e.query === 'string' && (e.result || e.error))
+      : []
+  } catch {
+    return []
+  }
+}
 
 function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const tabs: { id: Tab; label: string; icon: typeof MessageSquare }[] = [
     { id: 'investigate', label: 'Investigate', icon: MessageSquare },
     { id: 'escalations', label: 'Escalations', icon: ShieldAlert },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   ]
   return (
     <div className="flex shrink-0 items-center gap-1 border-b border-border/60 px-4 py-2">
@@ -128,10 +148,34 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
 }
 
 export default function App() {
-  const [entries, setEntries] = useState<ChatEntry[]>([])
+  const [entries, setEntries] = useState<ChatEntry[]>(loadEntries)
   const [loading, setLoading] = useState(false)
   const [composerSeed, setComposerSeed] = useState({ value: '', key: 0 })
   const [tab, setTab] = useState<Tab>('investigate')
+  // One anchor per answer, so the sidebar can jump to a past result.
+  const answerRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
+    } catch {
+      // Quota or private mode — losing persistence is not worth breaking the app over.
+    }
+  }, [entries])
+
+  const goToAnswer = useCallback((id: string) => {
+    setTab('investigate')
+    // After the tab switch has painted, otherwise the node is not mounted yet.
+    requestAnimationFrame(() =>
+      answerRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    )
+  }, [])
+
+  function clearChat() {
+    setEntries([])
+    answerRefs.current = {}
+    setComposerSeed({ value: '', key: Date.now() })
+  }
 
   async function analyze(text: string) {
     setTab('investigate')
@@ -156,20 +200,28 @@ export default function App() {
 
   return (
     <div className="flex h-dvh overflow-hidden text-foreground">
-      <Sidebar entries={entries} onSelectQuery={pickQuery} />
+      <Sidebar entries={entries} onClear={clearChat} onSelectQuery={goToAnswer} />
 
       <div className="flex min-h-0 flex-1 flex-col">
         <TabBar onChange={setTab} tab={tab} />
 
         {tab === 'escalations' ? (
           <EscalationsView />
+        ) : tab === 'dashboard' ? (
+          <DashboardView />
         ) : entries.length === 0 ? (
           <Hero composerSeed={composerSeed} loading={loading} onPick={pickQuery} onSubmit={analyze} />
         ) : (
           <>
             <ChatScrollArea>
               {entries.map((entry) => (
-                <div className="flex flex-col gap-5" key={entry.id}>
+                <div
+                  className="flex flex-col gap-5 scroll-mt-6"
+                  key={entry.id}
+                  ref={(node) => {
+                    answerRefs.current[entry.id] = node
+                  }}
+                >
                   <UserMessage>{entry.query}</UserMessage>
                   <AssistantMessage>
                     {entry.error ? (

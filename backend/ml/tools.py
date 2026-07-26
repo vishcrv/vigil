@@ -169,6 +169,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "sample: which columns to return.",
                 },
+                "min_value": {
+                    "type": "number",
+                    "description": "group/distribution/top_accounts: keep only groups whose "
+                                   "aggregated value is at least this (SQL HAVING). Use for "
+                                   "'customers with 10 or more transactions' — set "
+                                   "aggregation=count and min_value=10. Without it you get a "
+                                   "ranking, which is a different question.",
+                },
                 "order": {"type": "string", "enum": ["asc", "desc"]},
                 "limit": {"type": "integer", "minimum": 1, "description": "Default 50, max 1000."},
             },
