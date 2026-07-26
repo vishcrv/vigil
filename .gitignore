@@ -23,3 +23,9 @@ backend/data/models/
 
 # SQLite
 aml_agent.db
+
+# Agent/editor tooling (skills installed via `npx skills add`) - local developer setup, not
+# part of the deliverable.
+.agents/
+.claude/
+skills-lock.json
