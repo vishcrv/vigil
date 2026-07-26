@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { AlertTriangle, ArrowUpDown, Download, Info, ShieldCheck } from 'lucide-react'
 import type { FlaggedItem } from '../types'
-import { escalate as escalateFlag } from '../api'
+import { escalate as escalateFlag, undoEscalation } from '../api'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
+import { Textarea } from './ui/textarea'
 import {
   Dialog,
   DialogContent,
@@ -47,15 +48,43 @@ function RiskBadge({ level }: { level: string }) {
 
 function EscalateControl({ item }: { item: FlaggedItem }) {
   const [open, setOpen] = useState(false)
-  const [escalated, setEscalated] = useState(false)
+  const [escalated, setEscalated] = useState(Boolean(item.escalated_at))
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState('')
 
-  if (item.escalated_at || escalated) {
+  async function undo() {
+    if (item.flag_id === null) return
+    setPending(true)
+    setError(null)
+    try {
+      await undoEscalation(item.flag_id)
+      setEscalated(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not undo.')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  if (escalated) {
     return (
-      <span className="text-xs font-medium text-risk-low">
-        Escalated {item.escalated_at ? new Date(item.escalated_at).toLocaleDateString() : 'now'}
-      </span>
+      <div className="flex flex-col items-start gap-0.5">
+        <span className="text-xs font-medium text-risk-low">
+          Escalated {item.escalated_at ? new Date(item.escalated_at).toLocaleDateString() : 'now'}
+        </span>
+        {item.flag_id !== null && (
+          <button
+            className="text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            disabled={pending}
+            onClick={() => void undo()}
+            type="button"
+          >
+            {pending ? 'Undoing…' : 'Undo'}
+          </button>
+        )}
+        {error && <span className="text-[11px] text-destructive">{error}</span>}
+      </div>
     )
   }
 
@@ -70,7 +99,7 @@ function EscalateControl({ item }: { item: FlaggedItem }) {
     setPending(true)
     setError(null)
     try {
-      await escalateFlag(item.flag_id, item.escalation_action)
+      await escalateFlag(item.flag_id, item.escalation_action, note.trim())
       setEscalated(true)
       setOpen(false)
     } catch (err) {
@@ -93,6 +122,12 @@ function EscalateControl({ item }: { item: FlaggedItem }) {
             action taken on this flag for customer {item.customer_id}.
           </DialogDescription>
         </DialogHeader>
+        <Textarea
+          className="min-h-20 text-sm"
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Optional note — why are you escalating this? (recorded in the audit trail)"
+          value={note}
+        />
         {error && <p className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <Button disabled={pending} onClick={() => setOpen(false)} variant="outline">
@@ -147,7 +182,14 @@ function downloadCsv(items: FlaggedItem[]) {
   URL.revokeObjectURL(url)
 }
 
-export default function FlaggedItemsTable({ items }: { items: FlaggedItem[] }) {
+export default function FlaggedItemsTable({
+  items,
+  onInvestigate,
+}: {
+  items: FlaggedItem[]
+  /** Drill-down: run a fresh investigation scoped to one account. */
+  onInvestigate?: (accountId: string) => void
+}) {
   const [sortKey, setSortKey] = useState<SortKey>('risk')
   const [riskFilter, setRiskFilter] = useState<string | null>(null)
 
@@ -233,7 +275,18 @@ export default function FlaggedItemsTable({ items }: { items: FlaggedItem[] }) {
                 key={item.transaction_id}
               >
                 <td className="px-5 py-3 font-mono text-xs text-foreground/90">
-                  {item.customer_id}
+                  {onInvestigate ? (
+                    <button
+                      className="rounded underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                      onClick={() => onInvestigate(item.customer_id)}
+                      title={`Investigate ${item.customer_id}`}
+                      type="button"
+                    >
+                      {item.customer_id}
+                    </button>
+                  ) : (
+                    item.customer_id
+                  )}
                 </td>
                 <td className="px-3 py-3 font-mono text-xs text-foreground/90">
                   {item.transaction_id}

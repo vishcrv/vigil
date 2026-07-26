@@ -1,4 +1,4 @@
-import { Check, X } from 'lucide-react'
+import { Check, ChevronRight, X } from 'lucide-react'
 import type { ExecutionSummary } from '../types'
 import { Badge } from './ui/badge'
 import { cn } from '../lib/utils'
@@ -89,6 +89,29 @@ export default function ExecutionSummaryPanel({
               </li>
             ))}
           </ol>
+
+          {/* spec.md calls tools-invoked-vs-skipped the "transparent decision flow"
+              differentiator, but listing four skipped tools inline repeated near-identical
+              boilerplate under every answer. Collapsed keeps the evidence one click away
+              without letting it bury the steps that ran. */}
+          {summary.tools_skipped.length > 0 && (
+            <details className="group mt-3">
+              <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+                <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
+                {summary.tools_skipped.length} tools not used
+              </summary>
+              <ul className="mt-1.5 space-y-1 pl-4">
+                {summary.tools_skipped.map((tool) => (
+                  <li className="text-[11px] leading-snug" key={tool.name}>
+                    <span className="font-mono text-muted-foreground line-through">
+                      {tool.name}
+                    </span>
+                    <span className="ml-1.5 text-muted-foreground/80">{tool.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       </div>
     </section>

@@ -1,9 +1,26 @@
 const DOTS = [0, 1, 2]
 
-export default function ThinkingIndicator({ label = 'Analyzing transactions' }: { label?: string }) {
+// Names the tool currently running rather than showing an undifferentiated spinner: a run is
+// several sequential calls over 5-15 seconds, and "Running anomaly" is the difference between
+// looking stuck and looking like it is working.
+const TOOL_LABEL: Record<string, string> = {
+  eda: 'Querying the dataset',
+  feature_eng: 'Building features',
+  anomaly: 'Running anomaly detection',
+  risk: 'Classifying risk',
+  explain: 'Writing the explanation',
+}
+
+export default function ThinkingIndicator({
+  label = 'Analyzing transactions',
+  tool = null,
+}: {
+  label?: string
+  tool?: string | null
+}) {
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <span>{label}</span>
+      <span>{tool ? (TOOL_LABEL[tool] ?? `Running ${tool}`) : label}</span>
       <span className="flex items-center gap-1">
         {DOTS.map((i) => (
           <span

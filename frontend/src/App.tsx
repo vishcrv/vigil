@@ -10,7 +10,7 @@ import ChatScrollArea from './components/chat/ChatScrollArea'
 import { AssistantMessage, UserMessage } from './components/chat/ChatMessage'
 import ChatComposer from './components/chat/ChatComposer'
 import ThinkingIndicator from './components/chat/ThinkingIndicator'
-import { analyze as analyzeQuery } from './api'
+import { analyzeStream } from './api'
 import { cn } from './lib/utils'
 import type { AgentResult } from './types'
 
@@ -73,7 +73,13 @@ function Hero({
   )
 }
 
-function AgentResponse({ result }: { result: AgentResult }) {
+function AgentResponse({
+  result,
+  onInvestigate,
+}: {
+  result: AgentResult
+  onInvestigate: (accountId: string) => void
+}) {
   // Not every query is an analysis. A greeting or a request for clarification comes back with
   // no tools invoked and nothing flagged — rendering the decision-flow panel, a header-only
   // table and two empty charts for that is noise. Show only what the run actually produced.
@@ -91,7 +97,7 @@ function AgentResponse({ result }: { result: AgentResult }) {
           and charts have nothing to plot in that case. */}
       {hasFlags && (
         <>
-          <FlaggedItemsTable items={result.flagged_items} />
+          <FlaggedItemsTable items={result.flagged_items} onInvestigate={onInvestigate} />
           <RiskCharts evidence={result.evidence} items={result.flagged_items} />
         </>
       )}
@@ -152,6 +158,8 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [composerSeed, setComposerSeed] = useState({ value: '', key: 0 })
   const [tab, setTab] = useState<Tab>('investigate')
+  // Name of the tool currently running, for the thinking indicator.
+  const [activeTool, setActiveTool] = useState<string | null>(null)
   // One anchor per answer, so the sidebar can jump to a past result.
   const answerRefs = useRef<Record<string, HTMLDivElement | null>>({})
   // A run is 5-15s of tool calls; without this the only way out of a mistyped query is to wait.
@@ -189,7 +197,7 @@ export default function App() {
     const controller = new AbortController()
     inFlight.current = controller
     try {
-      const result = await analyzeQuery(text, controller.signal)
+      const result = await analyzeStream(text, setActiveTool, controller.signal)
       setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, result } : e)))
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -201,8 +209,13 @@ export default function App() {
       }
     } finally {
       inFlight.current = null
+      setActiveTool(null)
       setLoading(false)
     }
+  }
+
+  function investigateAccount(accountId: string) {
+    void analyze(`Is customer ${accountId} suspicious?`)
   }
 
   function stopAnalysis() {
@@ -250,9 +263,12 @@ export default function App() {
                         </div>
                       </div>
                     ) : entry.result ? (
-                      <AgentResponse result={entry.result} />
+                      <AgentResponse
+                        onInvestigate={investigateAccount}
+                        result={entry.result}
+                      />
                     ) : (
-                      <ThinkingIndicator />
+                      <ThinkingIndicator tool={activeTool} />
                     )}
                   </AssistantMessage>
                 </div>

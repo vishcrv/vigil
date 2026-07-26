@@ -56,8 +56,13 @@ def get_connection(path: str | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create tables + indexes if absent. Idempotent, safe on every startup."""
+    """Create tables + indexes if absent, then apply column migrations. Idempotent."""
     conn.executescript(SCHEMA)
+    # `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a column added after a
+    # database already exists has to be migrated in explicitly or every running install breaks.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(flags)")}
+    if "escalation_note" not in existing:
+        conn.execute("ALTER TABLE flags ADD COLUMN escalation_note TEXT")
     conn.commit()
 
 
@@ -106,14 +111,65 @@ def insert_flags(conn: sqlite3.Connection, query_id: int, items: list[FlaggedIte
     return ids
 
 
-def escalate_flag(conn: sqlite3.Connection, flag_id: int, action: str) -> bool:
-    """Mark a flag as actually escalated by a human. False if flag_id doesn't exist."""
+def escalate_flag(
+    conn: sqlite3.Connection, flag_id: int, action: str, note: str | None = None
+) -> bool:
+    """Mark a flag as actually escalated by a human. False if flag_id doesn't exist.
+
+    The note is the analyst's own words about why they escalated. An audit trail that records
+    the decision but not the reasoning is only half a record.
+    """
     cur = conn.execute(
-        "UPDATE flags SET escalated_at = ?, escalation_action = ? WHERE id = ?",
-        (datetime.now(timezone.utc).isoformat(), action, flag_id),
+        "UPDATE flags SET escalated_at = ?, escalation_action = ?, escalation_note = ? "
+        "WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), action, note or None, flag_id),
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def undo_escalation(conn: sqlite3.Connection, flag_id: int) -> bool:
+    """Withdraw an escalation. False if the flag doesn't exist or was never escalated.
+
+    Escalation is one click and mis-clicking it puts a false decision into the audit trail, so
+    it has to be reversible. The flag itself stays; only the human decision is cleared.
+    """
+    cur = conn.execute(
+        "UPDATE flags SET escalated_at = NULL, escalation_note = NULL "
+        "WHERE id = ? AND escalated_at IS NOT NULL",
+        (flag_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def purge_old_queries(conn: sqlite3.Connection, keep: int = 500) -> int:
+    """Drop all but the newest `keep` queries and their flags. Returns rows removed.
+
+    The audit file grows unbounded otherwise. Escalated flags are never purged — those are the
+    decisions a human actually took, which is the part worth keeping.
+    """
+    cur = conn.execute(
+        """
+        DELETE FROM flags
+        WHERE escalated_at IS NULL
+          AND query_id IN (
+              SELECT id FROM queries ORDER BY id DESC LIMIT -1 OFFSET ?
+          )
+        """,
+        (keep,),
+    )
+    removed = cur.rowcount
+    conn.execute(
+        """
+        DELETE FROM queries
+        WHERE id IN (SELECT id FROM queries ORDER BY id DESC LIMIT -1 OFFSET ?)
+          AND id NOT IN (SELECT DISTINCT query_id FROM flags)
+        """,
+        (keep,),
+    )
+    conn.commit()
+    return removed
 
 
 def list_escalated_flags(conn: sqlite3.Connection) -> list[dict]:
@@ -128,7 +184,7 @@ def list_escalated_flags(conn: sqlite3.Connection) -> list[dict]:
         """
         SELECT f.id AS flag_id, f.customer_id, f.transaction_id, f.amount, f.timestamp,
                f.risk_level, f.pattern_detected, f.anomaly_score, f.explanation,
-               f.escalation_action, f.escalated_at,
+               f.escalation_action, f.escalated_at, f.escalation_note,
                q.query_text, q.timestamp AS query_timestamp
         FROM flags f
         LEFT JOIN queries q ON q.id = f.query_id

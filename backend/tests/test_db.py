@@ -1,6 +1,13 @@
 from datetime import datetime
 
-from db import escalate_flag, get_connection, init_db, insert_flags, insert_query
+from db import (
+    escalate_flag,
+    get_connection,
+    init_db,
+    insert_flags,
+    insert_query,
+    list_escalated_flags,
+)
 from schemas import AgentResult, ExecutionSummary, FlaggedItem, SkippedTool
 
 RESULT = AgentResult(
@@ -145,3 +152,81 @@ def test_dashboard_stats_excludes_the_none_pattern_placeholder(tmp_path):
     insert_flags(conn, insert_query(conn, result), result.flagged_items)
 
     assert dashboard_stats(conn)["by_pattern"] == []
+
+
+def test_escalation_records_the_analysts_note(tmp_path):
+    """An audit trail that records the decision but not the reasoning is half a record."""
+    conn = get_connection(str(tmp_path / "note.db"))
+    init_db(conn)
+    result = RESULT.model_copy(deep=True)
+    flag_id = insert_flags(conn, insert_query(conn, result), result.flagged_items)[0]
+
+    assert escalate_flag(conn, flag_id, "REPORT", "three deposits under the threshold") is True
+
+    row = list_escalated_flags(conn)[0]
+    assert row["escalation_note"] == "three deposits under the threshold"
+    assert row["escalation_action"] == "REPORT"
+
+
+def test_undo_clears_the_human_decision_but_keeps_the_flag(tmp_path):
+    """Escalating is one click, so a mis-click writes a decision nobody meant to take. The
+    finding itself stays — only the human action is withdrawn."""
+    from db import undo_escalation
+
+    conn = get_connection(str(tmp_path / "undo.db"))
+    init_db(conn)
+    result = RESULT.model_copy(deep=True)
+    flag_id = insert_flags(conn, insert_query(conn, result), result.flagged_items)[0]
+    escalate_flag(conn, flag_id, "REPORT", "mis-click")
+
+    assert undo_escalation(conn, flag_id) is True
+    assert list_escalated_flags(conn) == []
+    assert conn.execute("SELECT count(*) FROM flags").fetchone()[0] == len(result.flagged_items)
+    # Idempotent: undoing something that was never escalated is a no-op, not an error.
+    assert undo_escalation(conn, flag_id) is False
+
+
+def test_purge_keeps_recent_queries_and_never_drops_escalations(tmp_path):
+    """The audit file grows unbounded otherwise, but a decision a human actually took is the
+    part worth keeping regardless of age."""
+    from db import purge_old_queries
+
+    conn = get_connection(str(tmp_path / "purge.db"))
+    init_db(conn)
+
+    oldest_flag = None
+    for i in range(12):
+        result = RESULT.model_copy(deep=True)
+        result.query = f"query {i}"
+        flag_ids = insert_flags(conn, insert_query(conn, result), result.flagged_items)
+        if i == 0:
+            oldest_flag = flag_ids[0]
+            escalate_flag(conn, oldest_flag, "REPORT", "keep me")
+
+    purge_old_queries(conn, keep=5)
+
+    remaining = {row["id"] for row in conn.execute("SELECT id FROM flags")}
+    assert oldest_flag in remaining, "an escalated flag must survive the purge"
+    assert conn.execute("SELECT count(*) FROM queries").fetchone()[0] <= 6
+
+
+def test_migration_adds_the_note_column_to_an_existing_database(tmp_path):
+    """CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so a column added later has
+    to be migrated in or every running install breaks on the next write."""
+    path = str(tmp_path / "migrate.db")
+    conn = get_connection(path)
+    conn.executescript(
+        "CREATE TABLE queries (id INTEGER PRIMARY KEY AUTOINCREMENT, query_text TEXT,"
+        " timestamp TEXT, intent_detected TEXT, filters_applied TEXT, tools_invoked TEXT,"
+        " tools_skipped TEXT);"
+        "CREATE TABLE flags (id INTEGER PRIMARY KEY AUTOINCREMENT, query_id INTEGER,"
+        " customer_id TEXT, transaction_id TEXT, amount REAL, timestamp TEXT, risk_level TEXT,"
+        " pattern_detected TEXT, anomaly_score REAL, explanation TEXT, escalation_action TEXT,"
+        " escalated_at TEXT);"
+    )
+    conn.commit()
+
+    init_db(conn)  # must migrate, not fail
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(flags)")}
+    assert "escalation_note" in columns

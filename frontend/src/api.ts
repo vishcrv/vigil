@@ -65,6 +65,70 @@ export function analyze(query: string, signal?: AbortSignal): Promise<AgentResul
   return post<AgentResult>('/api/v1/analyze', { query }, signal)
 }
 
-export function escalate(flagId: number, action: EscalationAction): Promise<{ escalated: boolean }> {
-  return post('/api/v1/escalate', { flag_id: flagId, action })
+export function escalate(
+  flagId: number,
+  action: EscalationAction,
+  note?: string,
+): Promise<{ escalated: boolean }> {
+  return post('/api/v1/escalate', { flag_id: flagId, action, note: note || null })
+}
+
+/** Withdraw an escalation — escalating is one click, so it has to be reversible. */
+export function undoEscalation(flagId: number): Promise<{ escalated: boolean }> {
+  return post('/api/v1/escalate/undo', { flag_id: flagId })
+}
+
+/**
+ * Same run as `analyze`, streamed. Reports each tool dispatch as it happens so the UI can show
+ * progress instead of a spinner for 5-15 seconds.
+ *
+ * Uses fetch rather than EventSource because EventSource cannot issue a POST. Falls back to the
+ * caller's error handling on any transport failure; `analyze` remains available unchanged.
+ */
+export async function analyzeStream(
+  query: string,
+  onTool: (name: string) => void,
+  signal?: AbortSignal,
+): Promise<AgentResult> {
+  const response = await fetch(BASE + '/api/v1/analyze/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    signal,
+  })
+  if (!response.ok || !response.body) {
+    throw new Error(`${response.status} ${response.statusText}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: AgentResult | null = null
+  let failure: string | null = null
+
+  // SSE frames are separated by a blank line; a chunk can split one, so parse only whole frames.
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let split = buffer.indexOf('\n\n')
+    while (split !== -1) {
+      const frame = buffer.slice(0, split)
+      buffer = buffer.slice(split + 2)
+      split = buffer.indexOf('\n\n')
+
+      const event = /^event: (.*)$/m.exec(frame)?.[1]
+      const raw = /^data: (.*)$/m.exec(frame)?.[1]
+      if (!event || !raw) continue
+      const payload = JSON.parse(raw)
+      if (event === 'tool_start') onTool(payload.name)
+      else if (event === 'result') result = payload as AgentResult
+      else if (event === 'error') failure = payload.detail
+    }
+  }
+
+  if (failure) throw new Error(failure)
+  if (!result) throw new Error('The analysis ended without returning a result.')
+  return result
 }

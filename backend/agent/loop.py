@@ -366,8 +366,21 @@ def _build_evidence(flagged: list[FlaggedItem]) -> Evidence | None:
     return Evidence(accounts=accounts, daily_activity=daily, rule_mix=mix)
 
 
-def tool_calling_loop(client, query: str) -> AgentResult:
-    """Full agent run: intent parse -> tool selection -> dispatch -> validated AgentResult."""
+def tool_calling_loop(client, query: str, on_event=None) -> AgentResult:
+    """Full agent run: intent parse -> tool selection -> dispatch -> validated AgentResult.
+
+    `on_event(kind, payload)` is an optional progress hook. A run is 5-15 seconds of sequential
+    tool calls and the UI otherwise shows nothing until all of it finishes; the streaming route
+    passes a callback so each dispatch can be reported as it happens. Left as None the loop
+    behaves exactly as before, which is what /analyze and every existing test rely on.
+    """
+    def emit(kind: str, **payload) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(kind, payload)
+        except Exception:  # noqa: BLE001 - a broken listener must not fail the analysis
+            pass
     messages = [{"role": "user", "content": query}]
     invoked: list[str] = []  # the transparency feed: what actually got dispatched, in order
     # Tool output kept as it goes past, so a flag can be built from what the tools actually
@@ -383,9 +396,11 @@ def tool_calling_loop(client, query: str) -> AgentResult:
 
         results = []
         for call in reply.tool_calls:
+            emit("tool_start", name=call["name"], args=call.get("input"))
             result = _dispatch(call["name"], call["input"])
             invoked.append(call["name"])
             _remember_finding(call, result, risk_results, explanations)
+            emit("tool_end", name=call["name"], ok="error" not in (result or {}))
             results.append(
                 {
                     "type": "tool_result",

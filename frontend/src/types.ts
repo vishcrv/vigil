@@ -32,6 +32,7 @@ export interface FlaggedItem {
 export interface EscalatedFlag extends FlaggedItem {
   query_text: string | null
   query_timestamp: string | null
+  escalation_note: string | null
 }
 
 export interface EvidencePoint {

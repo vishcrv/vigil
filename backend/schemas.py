@@ -55,6 +55,7 @@ class EscalatedFlag(FlaggedItem):
 
     query_text: str | None = None
     query_timestamp: datetime | None = None
+    escalation_note: str | None = None
 
 
 class EvidencePoint(BaseModel):
@@ -98,6 +99,9 @@ class AnalyzeRequest(BaseModel):
 class EscalateRequest(BaseModel):
     flag_id: int
     action: EscalationAction
+    # The analyst's reasoning. An audit trail that records the decision but not the why is only
+    # half a record.
+    note: str | None = None
 
 
 def demo() -> None:
