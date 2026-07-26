@@ -2,10 +2,11 @@
 
 ## Project: AML Detection Agent ("vigil")
 
-> Living spec reflecting the **planned** system as of 2026-07-25. Nothing has been implemented yet,
-> and every section below describes intended scope, so almost everything is marked
-> **[PLANNED, NOT BUILT]**. This spec is the standalone reference for future sessions; open
-> decisions are called out explicitly in the section right after this header, not silently assumed.
+> **Built and running as of 2026-07-26.** This began as a pre-implementation spec; the system now
+> exists end to end — agent loop, five ML tools, FastAPI, React UI, SQLite audit trail. Sections
+> still marked **[PLANNED, NOT BUILT]** are the ones nobody has revisited, not statements about
+> the current system; where this file and the code disagree, the code wins and this file should
+> be corrected. See `README.md` to run it and `backend/docs/ml_spec.md` for the ML workstream.
 
 ---
 
@@ -138,7 +139,8 @@ vigil/
 │   ├── aml_agent.db                # gitignored, created at runtime (SQLITE_PATH)
 │   ├── api/
 │   │   └── routes/
-│   │       └── agent.py           # POST /api/v1/analyze, POST /api/v1/escalate
+│   │       └── agent.py           # /analyze, /analyze/stream, /escalate(+undo),
+│   │                                #   /escalations, /stats
 │   ├── agent/
 │   │   ├── providers.py           # get_client(provider) -> chat_with_tools wrapper
 │   │   └── loop.py                # tool_calling_loop
@@ -308,14 +310,32 @@ for a hackathon demo; anyone running it locally has full access to every functio
 **[PLANNED, NOT BUILT]**, no FastAPI app exists yet. Two routes, final (see Decisions Log item 2):
 
 ### `agent` router, prefix `/api/v1`
-File: `backend/api/routes/agent.py` (not yet created, see Folder Structure above)
+File: `backend/api/routes/agent.py`
 
 - `POST /api/v1/analyze` → Body: `{query: str}`. Runs the full agent loop (intent parse → dynamic
   tool selection → execution → structured result), writes a `queries` row and one `flags` row per
   flagged item to SQLite, and returns an `AgentResult` (see Non-Functional Notes for the shape).
-- `POST /api/v1/escalate` → Body: `{flag_id: int, action: str}`. Sets `flags.escalated_at` for that
-  row in SQLite and returns confirmation. This is a real, small endpoint now that SQLite exists,
-  not a stub; it's what makes the "judge clicks escalate" interaction in the UI actually persist.
+- `POST /api/v1/analyze/stream` → same body and same run, streamed as Server-Sent Events: one
+  `tool_start`/`tool_end` event per dispatch, then the finished `AgentResult`. Added because a
+  run is 5-15s of sequential tool calls and the UI could otherwise only show a spinner.
+  `/analyze` is unchanged and remains the fallback.
+- `POST /api/v1/escalate` → Body: `{flag_id: int, action: str, note?: str}`. Sets
+  `flags.escalated_at` for that row in SQLite and returns confirmation. This is what makes the
+  "judge clicks escalate" interaction actually persist. The optional note is the analyst's own
+  reasoning: an audit trail that records the decision but not the why is half a record.
+- `POST /api/v1/escalate/undo` → Body: `{flag_id: int}`. Withdraws an escalation. Escalating is
+  one click, so a mis-click writes a decision nobody meant to take; the flag itself survives,
+  only the human action is cleared.
+- `GET /api/v1/escalations` → the audit trail: every flag a human escalated, newest first, each
+  joined back to the query that surfaced it. Read from SQLite rather than session state, so it
+  survives a reload and spans conversations.
+- `GET /api/v1/stats` → dashboard aggregates over every run recorded: totals, escalation rate,
+  flags by risk level, motif frequency, tool usage, most-flagged accounts, recent queries.
+
+**Divergence from the original two-route plan.** The three read routes and the stream were added
+during implementation. None of them changes the agent: `/stats` and `/escalations` only read
+what `/analyze` already persisted, and `/analyze/stream` runs the identical loop. They exist
+because the data was being recorded and never shown.
 
 **Cut:** `GET /api/v1/customer/{customer_id}/risk-profile`, not building (see Decisions Log item 2).
 Entity-lookup queries route through `/analyze` instead.
