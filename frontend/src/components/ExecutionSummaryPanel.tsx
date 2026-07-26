@@ -11,10 +11,16 @@ export default function ExecutionSummaryPanel({
   narrative: string
 }) {
   const filters = Object.entries(summary.filters_applied)
-  const steps = [
-    ...summary.tools_invoked.map((name) => ({ name, invoked: true, reason: undefined as string | undefined })),
-    ...summary.tools_skipped.map((t) => ({ name: t.name, invoked: false, reason: t.reason })),
-  ]
+  // Invoked tools only. Listing the four that did not run repeated near-identical boilerplate
+  // ("Not needed for an aggregate counting query.") under every answer, which buried the one or
+  // two steps that actually happened. The skipped list with reasons is still carried on
+  // AgentResult and persisted to the queries table, so nothing is lost — it is just not the
+  // thing worth the most vertical space in the answer.
+  const steps = summary.tools_invoked.map((name) => ({
+    name,
+    invoked: true,
+    reason: undefined as string | undefined,
+  }))
 
   return (
     <section className="glass rounded-xl p-5">
