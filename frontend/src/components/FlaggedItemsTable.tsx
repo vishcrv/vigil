@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { AlertTriangle, Info, ShieldCheck } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { AlertTriangle, ArrowUpDown, Download, Info, ShieldCheck } from 'lucide-react'
 import type { FlaggedItem } from '../types'
 import { escalate as escalateFlag } from '../api'
 import { cn } from '../lib/utils'
@@ -107,16 +107,109 @@ function EscalateControl({ item }: { item: FlaggedItem }) {
   )
 }
 
+// Highest risk first by default: the reason four tiers exist is triage order, so the table
+// should open on the rows an analyst would work first.
+const RISK_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+
+type SortKey = 'risk' | 'amount'
+
+function toCsv(items: FlaggedItem[]): string {
+  const header = [
+    'customer_id', 'transaction_id', 'amount', 'timestamp', 'risk_level',
+    'pattern_detected', 'anomaly_score', 'escalation_action', 'escalated_at', 'explanation',
+  ]
+  const escape = (value: unknown) => {
+    const text = value === null || value === undefined ? '' : String(value)
+    // Explanations contain commas and quotes; RFC 4180 doubling keeps Excel happy.
+    return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+  }
+  return [
+    header.join(','),
+    ...items.map((i) =>
+      [
+        i.customer_id, i.transaction_id, i.amount, i.timestamp, i.risk_level,
+        i.pattern_detected, i.anomaly_score, i.escalation_action, i.escalated_at ?? '',
+        i.explanation,
+      ]
+        .map(escape)
+        .join(','),
+    ),
+  ].join('\n')
+}
+
+function downloadCsv(items: FlaggedItem[]) {
+  const blob = new Blob([toCsv(items)], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `vigil-flags-${new Date().toISOString().slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function FlaggedItemsTable({ items }: { items: FlaggedItem[] }) {
+  const [sortKey, setSortKey] = useState<SortKey>('risk')
+  const [riskFilter, setRiskFilter] = useState<string | null>(null)
+
+  const visible = useMemo(() => {
+    const filtered = riskFilter ? items.filter((i) => i.risk_level === riskFilter) : items
+    return [...filtered].sort((a, b) =>
+      sortKey === 'amount'
+        ? b.amount - a.amount
+        : RISK_ORDER.indexOf(a.risk_level) - RISK_ORDER.indexOf(b.risk_level),
+    )
+  }, [items, riskFilter, sortKey])
+
+  const present = RISK_ORDER.filter((level) => items.some((i) => i.risk_level === level))
+
   return (
     <section className="glass overflow-hidden rounded-xl">
-      <header className="flex items-center gap-2 border-b border-border/60 px-5 py-3.5">
+      <header className="flex flex-wrap items-center gap-2 border-b border-border/60 px-5 py-3.5">
         <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
           Flagged items
         </h2>
         <span className="rounded-full bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-          {items.length}
+          {visible.length}
+          {riskFilter && ` / ${items.length}`}
         </span>
+
+        {present.length > 1 &&
+          present.map((level) => (
+            <button
+              className={cn(
+                'rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors',
+                riskFilter === level
+                  ? 'border-transparent bg-accent text-foreground'
+                  : 'border-border text-muted-foreground hover:text-foreground',
+              )}
+              key={level}
+              onClick={() => setRiskFilter(riskFilter === level ? null : level)}
+              type="button"
+            >
+              {level}
+            </button>
+          ))}
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            className="rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onClick={() => setSortKey(sortKey === 'risk' ? 'amount' : 'risk')}
+            title="Toggle sort"
+            type="button"
+          >
+            <ArrowUpDown className="mr-1 inline size-3" />
+            {sortKey === 'risk' ? 'Risk' : 'Amount'}
+          </button>
+          <button
+            className="rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onClick={() => downloadCsv(visible)}
+            title="Download these rows as CSV"
+            type="button"
+          >
+            <Download className="mr-1 inline size-3" />
+            CSV
+          </button>
+        </div>
       </header>
 
       <div className="scroll-thin overflow-x-auto">
@@ -134,7 +227,7 @@ export default function FlaggedItemsTable({ items }: { items: FlaggedItem[] }) {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {visible.map((item) => (
               <tr
                 className="border-b border-border/60 align-top transition-colors last:border-0 hover:bg-accent/40"
                 key={item.transaction_id}

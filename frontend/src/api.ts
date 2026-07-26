@@ -13,15 +13,19 @@ import type {
 const BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
 
 /** FastAPI returns {detail: ...} on error; surface that rather than a bare status code. */
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {
     response = await fetch(BASE + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     })
-  } catch {
+  } catch (err) {
+    // An aborted request is a user action, not a backend problem — let it through untouched so
+    // the caller can tell the two apart.
+    if (err instanceof DOMException && err.name === 'AbortError') throw err
     // fetch only rejects on network-level failure — backend down is the likely cause locally.
     throw new Error(`Can't reach the backend at ${BASE}. Is uvicorn running?`)
   }
@@ -57,8 +61,8 @@ export function getStats(): Promise<DashboardStats> {
   return get<DashboardStats>('/api/v1/stats')
 }
 
-export function analyze(query: string): Promise<AgentResult> {
-  return post<AgentResult>('/api/v1/analyze', { query })
+export function analyze(query: string, signal?: AbortSignal): Promise<AgentResult> {
+  return post<AgentResult>('/api/v1/analyze', { query }, signal)
 }
 
 export function escalate(flagId: number, action: EscalationAction): Promise<{ escalated: boolean }> {

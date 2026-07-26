@@ -316,3 +316,42 @@ def test_min_value_absent_means_no_having_clause():
 def test_non_numeric_min_value_is_rejected(bad):
     assert "min_value" in eda({"operation": "top_accounts", "aggregation": "count",
                                "min_value": bad})["error"]
+
+
+# --- count_groups -----------------------------------------------------------------------------
+
+def test_count_groups_counts_groups_not_rows():
+    """"How many customers made 10+ transactions" is a count of accounts clearing a threshold.
+
+    `count` answers rows and `top_accounts` answers a ranking; before this the agent reported
+    the length of a truncated ranking as if it were the total.
+    """
+    spec = {
+        "operation": "count_groups", "dimension": "from_account", "aggregation": "count",
+        "filters": [{"column": "amount_paid", "op": "<", "value": 10000}],
+    }
+    loose = eda({**spec, "min_value": 10})["records"][0]["n"]
+    strict = eda({**spec, "min_value": 10000})["records"][0]["n"]
+    rows = eda({"operation": "count", "filters": spec["filters"]})["records"][0]["n"]
+
+    assert loose > strict >= 1
+    assert loose < rows, "accounts must be fewer than the transactions they made"
+
+
+def test_count_groups_without_a_threshold_counts_every_group():
+    total = eda({"operation": "count_groups", "dimension": "payment_format",
+                 "aggregation": "count"})["records"][0]["n"]
+    listed = eda({"operation": "distribution", "dimension": "payment_format",
+                  "limit": 100})["records"]
+    assert total == len(listed)
+
+
+def test_count_groups_requires_a_dimension():
+    assert "dimension" in eda({"operation": "count_groups"})["error"]
+
+
+def test_count_groups_binds_its_threshold():
+    result = eda({"operation": "count_groups", "dimension": "from_account",
+                  "aggregation": "count", "min_value": 42})
+    assert 42 in result["sql_parameters"]
+    assert "42" not in result["sql"]

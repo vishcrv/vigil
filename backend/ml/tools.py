@@ -128,7 +128,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "operation": {
                     "type": "string",
                     "enum": list(OPERATIONS),
-                    "description": "count: row count. aggregate: one number over a measure. "
+                    "description": "count: row count. count_groups: how many groups clear a "
+                                   "threshold, e.g. how many customers made 10+ transactions "
+                                   "(set dimension, aggregation=count, min_value=10) - use this "
+                                   "for 'how many customers/accounts', never the length of a "
+                                   "ranking. aggregate: one number over a measure. "
                                    "group: measure by dimension. distribution: row counts by "
                                    "dimension. time_series: measure bucketed by time. "
                                    "top_accounts: highest-ranking accounts. sample: raw rows.",

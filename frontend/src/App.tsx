@@ -154,6 +154,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('investigate')
   // One anchor per answer, so the sidebar can jump to a past result.
   const answerRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  // A run is 5-15s of tool calls; without this the only way out of a mistyped query is to wait.
+  const inFlight = useRef<AbortController | null>(null)
 
   useEffect(() => {
     try {
@@ -172,6 +174,7 @@ export default function App() {
   }, [])
 
   function clearChat() {
+    inFlight.current?.abort()
     setEntries([])
     answerRefs.current = {}
     setComposerSeed({ value: '', key: Date.now() })
@@ -183,15 +186,27 @@ export default function App() {
     setComposerSeed({ value: '', key: Date.now() })
     setEntries((prev) => [...prev, { id, query: text, result: null, error: null }])
     setLoading(true)
+    const controller = new AbortController()
+    inFlight.current = controller
     try {
-      const result = await analyzeQuery(text)
+      const result = await analyzeQuery(text, controller.signal)
       setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, result } : e)))
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Analysis failed.'
-      setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, error: message } : e)))
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Drop the placeholder entirely rather than leaving a cancelled row in the transcript.
+        setEntries((prev) => prev.filter((e) => e.id !== id))
+      } else {
+        const message = err instanceof Error ? err.message : 'Analysis failed.'
+        setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, error: message } : e)))
+      }
     } finally {
+      inFlight.current = null
       setLoading(false)
     }
+  }
+
+  function stopAnalysis() {
+    inFlight.current?.abort()
   }
 
   function pickQuery(q: string) {
@@ -249,6 +264,7 @@ export default function App() {
               initialValue={composerSeed.value}
               key={composerSeed.key}
               loading={loading}
+              onStop={stopAnalysis}
               onSubmit={analyze}
             />
           </>

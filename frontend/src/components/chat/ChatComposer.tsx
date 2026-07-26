@@ -1,4 +1,4 @@
-import { ArrowUp } from 'lucide-react'
+import { ArrowUp, Square } from 'lucide-react'
 import { useState, type KeyboardEvent } from 'react'
 import { Textarea } from '../ui/textarea'
 import { Button } from '../ui/button'
@@ -6,12 +6,15 @@ import { cn } from '../../lib/utils'
 
 export default function ChatComposer({
   onSubmit,
+  onStop,
   loading,
   initialValue = '',
   autoFocus = false,
   className,
 }: {
   onSubmit: (text: string) => void
+  /** Absent on the hero composer, where there is never a run to stop. */
+  onStop?: () => void
   loading: boolean
   initialValue?: string
   autoFocus?: boolean
@@ -44,16 +47,29 @@ export default function ChatComposer({
           placeholder="Ask about transactions, accounts, or patterns…"
           value={value}
         />
-        <Button
-          aria-label="Send query"
-          className="mb-1 size-9 shrink-0 rounded-full"
-          disabled={loading || !value.trim()}
-          onClick={submit}
-          size="icon"
-          type="button"
-        >
-          <ArrowUp className="size-4" />
-        </Button>
+        {loading && onStop ? (
+          <Button
+            aria-label="Stop analysis"
+            className="mb-1 size-9 shrink-0 rounded-full"
+            onClick={onStop}
+            size="icon"
+            type="button"
+            variant="outline"
+          >
+            <Square className="size-3.5 fill-current" />
+          </Button>
+        ) : (
+          <Button
+            aria-label="Send query"
+            className="mb-1 size-9 shrink-0 rounded-full"
+            disabled={loading || !value.trim()}
+            onClick={submit}
+            size="icon"
+            type="button"
+          >
+            <ArrowUp className="size-4" />
+          </Button>
+        )}
       </div>
       <p className="mt-2.5 text-center text-[11px] text-muted-foreground">
         vigil can make mistakes. Verify flagged activity before filing a report.

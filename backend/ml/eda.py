@@ -102,8 +102,8 @@ ORDER_DIRECTIONS = {"asc": "ASC", "desc": "DESC"}
 # substring buckets it correctly without parsing.
 INTERVALS = {"day": 10, "hour": 13, "month": 7}
 
-OPERATIONS = ("count", "aggregate", "group", "distribution", "time_series",
-              "top_accounts", "sample")
+OPERATIONS = ("count", "count_groups", "aggregate", "group", "distribution",
+              "time_series", "top_accounts", "sample")
 
 DEFAULT_SAMPLE_COLUMNS = [
     "timestamp", "from_account", "to_account", "amount_received",
@@ -303,6 +303,36 @@ def eda(query_spec: dict) -> dict:
 
         if operation == "count":
             sql = f"SELECT count(*) AS n FROM {table} WHERE {where_sql}"
+
+        elif operation == "count_groups":
+            # How many groups clear a threshold, e.g. "how many customers made 10+
+            # transactions". `count` answers rows and `top_accounts` answers a ranking; neither
+            # answers this, so the agent used to reply with the length of a truncated ranking
+            # and call it a total.
+            dimension = query_spec.get("dimension")
+            dim_col = _resolve_column(source, dimension, errors, "dimension")
+            aggregation = query_spec.get("aggregation", "count")
+            if aggregation not in AGGREGATIONS:
+                errors.append(f"aggregation must be one of: {', '.join(sorted(AGGREGATIONS))}")
+            if aggregation == "count":
+                measure_col = "*"
+            else:
+                measure = query_spec.get("measure")
+                measure_col = _resolve_column(source, measure, errors, "measure")
+                if measure_col and aggregation != "count_distinct"                         and measure not in MEASURES[source]:
+                    errors.append(f"measure '{measure}' is not numeric")
+            if not errors and dim_col:
+                having = (
+                    f"HAVING {_agg_expr(aggregation, measure_col)} >= ? "
+                    if min_value is not None else ""
+                )
+                sql = (
+                    f"SELECT count(*) AS n FROM ("
+                    f"SELECT {dim_col} AS dimension, "
+                    f"{_agg_expr(aggregation, measure_col)} AS value "
+                    f"FROM {table} WHERE {where_sql} GROUP BY {dim_col} {having}) t"
+                )
+                exec_params = params + ([min_value] if min_value is not None else [])
 
         elif operation == "aggregate":
             measure = query_spec.get("measure")
