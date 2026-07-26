@@ -6,8 +6,14 @@ from fastapi import APIRouter, HTTPException
 
 from agent.loop import tool_calling_loop
 from agent.providers import ProviderError, get_client
-from db import escalate_flag, get_connection, insert_flags, insert_query
-from schemas import AgentResult, AnalyzeRequest, EscalateRequest
+from db import (
+    escalate_flag,
+    get_connection,
+    insert_flags,
+    insert_query,
+    list_escalated_flags,
+)
+from schemas import AgentResult, AnalyzeRequest, EscalatedFlag, EscalateRequest
 
 router = APIRouter()
 
@@ -39,3 +45,15 @@ def escalate(req: EscalateRequest) -> dict:
         if not escalate_flag(conn, req.flag_id, req.action):
             raise HTTPException(status_code=404, detail=f"No flag with id {req.flag_id}")
     return {"flag_id": req.flag_id, "action": req.action, "escalated": True}
+
+
+@router.get("/escalations", response_model=list[EscalatedFlag])
+def escalations() -> list[EscalatedFlag]:
+    """The audit trail: flags a human actually escalated, newest first.
+
+    Read straight from SQLite rather than from session state, which is the point — an
+    escalation recorded yesterday has to still be there after a reload, and flags raised in
+    one conversation have to be visible from another.
+    """
+    with get_connection() as conn:
+        return [EscalatedFlag.model_validate(row) for row in list_escalated_flags(conn)]

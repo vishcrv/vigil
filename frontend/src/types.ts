@@ -28,6 +28,12 @@ export interface FlaggedItem {
   escalated_at: string | null
 }
 
+/** A flag a human escalated, joined back to the query that surfaced it (GET /escalations). */
+export interface EscalatedFlag extends FlaggedItem {
+  query_text: string | null
+  query_timestamp: string | null
+}
+
 export interface AgentResult {
   query: string
   summary: string

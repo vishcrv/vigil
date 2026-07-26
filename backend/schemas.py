@@ -46,6 +46,17 @@ class FlaggedItem(BaseModel):
     escalated_at: datetime | None = None
 
 
+class EscalatedFlag(FlaggedItem):
+    """A flag a human escalated, plus the query that surfaced it.
+
+    Extends FlaggedItem rather than redefining it so the audit view and the in-session table
+    render from the same shape; `escalated_at` is never None here by construction.
+    """
+
+    query_text: str | None = None
+    query_timestamp: datetime | None = None
+
+
 class AgentResult(BaseModel):
     """The full `POST /api/v1/analyze` response."""
 

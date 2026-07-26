@@ -114,3 +114,26 @@ def escalate_flag(conn: sqlite3.Connection, flag_id: int, action: str) -> bool:
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def list_escalated_flags(conn: sqlite3.Connection) -> list[dict]:
+    """Every flag a human has actually escalated, newest decision first.
+
+    Joined back to `queries` so the audit view can show what was being investigated when the
+    flag was raised — a row reading "customer X, CRITICAL, REPORT" is far less useful without
+    the question that surfaced it. Only rows with `escalated_at` set are returned: an agent
+    recommendation nobody acted on is not an escalation.
+    """
+    rows = conn.execute(
+        """
+        SELECT f.id AS flag_id, f.customer_id, f.transaction_id, f.amount, f.timestamp,
+               f.risk_level, f.pattern_detected, f.anomaly_score, f.explanation,
+               f.escalation_action, f.escalated_at,
+               q.query_text, q.timestamp AS query_timestamp
+        FROM flags f
+        LEFT JOIN queries q ON q.id = f.query_id
+        WHERE f.escalated_at IS NOT NULL
+        ORDER BY f.escalated_at DESC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]

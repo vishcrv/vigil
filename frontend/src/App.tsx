@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, MessageSquare, ShieldAlert } from 'lucide-react'
+import EscalationsView from './components/EscalationsView'
 import ExecutionSummaryPanel from './components/ExecutionSummaryPanel'
 import FlaggedItemsTable from './components/FlaggedItemsTable'
 import RiskCharts from './components/RiskCharts'
@@ -9,6 +10,7 @@ import { AssistantMessage, UserMessage } from './components/chat/ChatMessage'
 import ChatComposer from './components/chat/ChatComposer'
 import ThinkingIndicator from './components/chat/ThinkingIndicator'
 import { analyze as analyzeQuery } from './api'
+import { cn } from './lib/utils'
 import type { AgentResult } from './types'
 
 export interface ChatEntry {
@@ -18,10 +20,14 @@ export interface ChatEntry {
   error: string | null
 }
 
+// One per routing path the agent supports — entity lookup, pattern search, aggregate — and each
+// verified against the live dataset to return something worth looking at. The previous set led
+// with account 8000EBD30, which has no motif and is not an outlier: a correct answer, but it
+// renders as an empty flagged-items table, which is the worst possible first impression.
 const EXAMPLES = [
-  'Show me suspicious structuring activity in the last week',
-  'Is customer 8000EBD30 exhibiting fan-out behaviour?',
-  'Flag any transfers with currency mismatches this month',
+  'Is customer 1004286A8 suspicious?',
+  'Find structuring patterns in the last 30 days',
+  'What data do we have?',
 ]
 
 function Hero({
@@ -92,12 +98,43 @@ function AgentResponse({ result }: { result: AgentResult }) {
   )
 }
 
+type Tab = 'investigate' | 'escalations'
+
+function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
+  const tabs: { id: Tab; label: string; icon: typeof MessageSquare }[] = [
+    { id: 'investigate', label: 'Investigate', icon: MessageSquare },
+    { id: 'escalations', label: 'Escalations', icon: ShieldAlert },
+  ]
+  return (
+    <div className="flex shrink-0 items-center gap-1 border-b border-border/60 px-4 py-2">
+      {tabs.map(({ id, label, icon: Icon }) => (
+        <button
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+            tab === id
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+          )}
+          key={id}
+          onClick={() => onChange(id)}
+          type="button"
+        >
+          <Icon className="size-3.5" />
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function App() {
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [composerSeed, setComposerSeed] = useState({ value: '', key: 0 })
+  const [tab, setTab] = useState<Tab>('investigate')
 
   async function analyze(text: string) {
+    setTab('investigate')
     const id = crypto.randomUUID()
     setComposerSeed({ value: '', key: Date.now() })
     setEntries((prev) => [...prev, { id, query: text, result: null, error: null }])
@@ -122,7 +159,11 @@ export default function App() {
       <Sidebar entries={entries} onSelectQuery={pickQuery} />
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {entries.length === 0 ? (
+        <TabBar onChange={setTab} tab={tab} />
+
+        {tab === 'escalations' ? (
+          <EscalationsView />
+        ) : entries.length === 0 ? (
           <Hero composerSeed={composerSeed} loading={loading} onPick={pickQuery} onSubmit={analyze} />
         ) : (
           <>
