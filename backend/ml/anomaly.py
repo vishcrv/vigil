@@ -85,34 +85,60 @@ def _to_percentile(scores: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.clip(idx / (len(grid) - 1), 0.0, 1.0)
 
 
-def _fetch_rule_hits(con, accounts: list[str], limit: int = MAX_RULE_HITS) -> tuple[list[dict], int]:
-    """Highest-scoring rule hits for these accounts, plus the total number that matched.
+def _fetch_rule_hits(
+    con, accounts: list[str], subject: str | None = None, limit: int = MAX_RULE_HITS
+) -> tuple[list[dict], int]:
+    """Rule hits for these accounts, subject's own first, plus the total that matched.
 
     Capped because the result crosses the agent loop's context budget. A five-day scope touches
     ~650 accounts with hits, and serialising all of them with their evidence blobs produced a
     ~145,000-character tool result against `agent.loop.MAX_TOOL_RESULT_CHARS` of 20,000 — the
     loop would replace the whole payload with a truncation notice, leaving the model unable to
     pass a valid `anomaly_result` into `risk`. The returned total keeps the cut visible.
+
+    The subject's hits are fetched separately and never compete for that budget. Ordering the
+    whole set by score alone silently evicted them: account 1004286A8 has a GATHER-SCATTER hit
+    scoring 1.000, but so do dozens of its counterparties, so the subject fell outside the top
+    25 and `risk` saw no hit for the account actually being asked about — reporting
+    `pattern_detected: NONE` and an explanation reading "no named laundering pattern matched"
+    for an account with a perfect motif match.
     """
     if not RULE_HITS_PATH.exists() or not accounts:
         return [], 0
+
+    parquet = RULE_HITS_PATH.as_posix()
     placeholders = ", ".join("?" for _ in accounts)
     total = con.execute(
-        f"""SELECT count(*) FROM read_parquet('{RULE_HITS_PATH.as_posix()}')
+        f"""SELECT count(*) FROM read_parquet('{parquet}')
             WHERE account IN ({placeholders})""",
         accounts,
     ).fetchone()[0]
-    rows = con.execute(
-        f"""SELECT account, rule, score, evidence
-            FROM read_parquet('{RULE_HITS_PATH.as_posix()}')
-            WHERE account IN ({placeholders})
-            ORDER BY score DESC LIMIT ?""",
-        accounts + [limit],
-    ).fetchall()
-    return [
-        {"account": a, "rule": r, "score": round(float(s), 4), "evidence": json.loads(e)}
-        for a, r, s, e in rows
-    ], int(total)
+
+    def _rows_to_hits(rows) -> list[dict]:
+        return [
+            {"account": a, "rule": r, "score": round(float(s), 4), "evidence": json.loads(e)}
+            for a, r, s, e in rows
+        ]
+
+    subject_hits: list[dict] = []
+    if subject:
+        subject_hits = _rows_to_hits(con.execute(
+            f"""SELECT account, rule, score, evidence FROM read_parquet('{parquet}')
+                WHERE account = ? ORDER BY score DESC""",
+            [subject],
+        ).fetchall())
+
+    remaining = max(limit - len(subject_hits), 0)
+    others: list[dict] = []
+    if remaining:
+        others = _rows_to_hits(con.execute(
+            f"""SELECT account, rule, score, evidence FROM read_parquet('{parquet}')
+                WHERE account IN ({placeholders}) AND account IS DISTINCT FROM ?
+                ORDER BY score DESC LIMIT ?""",
+            accounts + [subject, remaining],
+        ).fetchall())
+
+    return subject_hits + others, int(total)
 
 
 @cached_tool()
@@ -205,7 +231,11 @@ def anomaly(scope: dict, method: str = "all") -> dict:
         accounts = sorted(
             set(df["From Account"].tolist()) | set(df["To Account"].tolist())
         )
-        rule_hits, rule_hits_total = _fetch_rule_hits(con, accounts)
+        # The account in scope is the one being asked about; its hits outrank its
+        # counterparties' for the budget.
+        rule_hits, rule_hits_total = _fetch_rule_hits(
+            con, accounts, subject=clean_scope.get("account_id")
+        )
 
         return {
             "scope": clean_scope,

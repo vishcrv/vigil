@@ -12,7 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from ml.anomaly import MAX_SCORE_ROWS, METHODS, MODEL_DIR, _weights_for, anomaly
+from ml.anomaly import (
+    MAX_RULE_HITS,
+    MAX_SCORE_ROWS,
+    METHODS,
+    MODEL_DIR,
+    _weights_for,
+    anomaly,
+)
 from ml.data import ENRICHED_PATH
 
 pytestmark = pytest.mark.skipif(
@@ -135,3 +142,37 @@ def test_weights_are_renormalized_over_the_requested_subset():
     weights = _weights_for(("a", "b"), {"a": 0.6, "b": 0.2, "c": 0.2})
     assert pytest.approx(weights["a"], abs=1e-9) == 0.75
     assert pytest.approx(sum(weights.values()), abs=1e-9) == 1.0
+
+
+# --- rule-hit budget --------------------------------------------------------------------
+
+def test_subject_rule_hits_survive_the_cap():
+    """The scoped account's own hits must never be evicted by its counterparties'.
+
+    Regression: hits were capped at MAX_RULE_HITS ordered by score alone. Account 1004286A8
+    has a GATHER-SCATTER hit scoring 1.000 and so do dozens of accounts it transacts with, so
+    the subject fell outside the top 25. `risk` then saw no hit for the account being asked
+    about and reported pattern_detected NONE with an explanation reading "no named laundering
+    pattern matched" — for a perfect motif match.
+    """
+    result = anomaly({"account_id": "1004286A8"})
+    assert result["rule_hits_truncated"] is True, "fixture must exceed the cap to be meaningful"
+
+    subject = [h for h in result["rule_hits"] if h["account"] == "1004286A8"]
+    assert subject, "the subject's own rule hits were dropped"
+    assert {h["rule"] for h in subject} >= {"GATHER-SCATTER"}
+    # and they come first, so a truncating consumer still sees them
+    assert result["rule_hits"][0]["account"] == "1004286A8"
+
+
+def test_rule_hits_stay_within_the_loop_budget():
+    """Payload must fit agent.loop.MAX_TOOL_RESULT_CHARS or the chain into risk() breaks."""
+    for scope in ({"account_id": "1004286A8"}, {"date_range": ["2022-09-01", "2022-09-05"]}):
+        assert len(json.dumps(anomaly(scope))) < 20_000, scope
+
+
+def test_capped_hits_report_the_true_total():
+    result = anomaly({"date_range": ["2022-09-01", "2022-09-05"]})
+    assert result["rule_hits_returned"] == len(result["rule_hits"]) <= MAX_RULE_HITS
+    assert result["rule_hits_total"] > result["rule_hits_returned"]
+    assert result["rule_hits_truncated"] is True
