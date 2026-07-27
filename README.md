@@ -74,64 +74,70 @@ classify risk, explain each flag, and recommend `MONITOR`, `REVIEW` or `REPORT`.
 
 ## Screenshots
 
-> [!TIP]
-> Drop the images into `screenshots/` using exactly these filenames and they render below.
+### The interface
 
-### 1. Entity lookup, the full result surface
+Three tabs (Investigate, Escalations, Dashboard), a running session counter in the sidebar, and a
+light and dark theme. Everything below is one live session against the real dataset.
+
+![Landing page](assets/01-landing.png)
+
+<details>
+<summary>Light theme</summary>
+
+![Landing page, light theme](assets/02-landing-light.png)
+
+</details>
+
+### Entity lookup
 
 **Query:** `Is customer 1004286A8 suspicious?`
-**Capture:** the whole Investigate tab once the run finishes, showing the execution summary, the
-flagged-items table (this account returns `CRITICAL`) and the evidence charts underneath.
 
-![Entity lookup](screenshots/01-investigate-entity.png)
+Intent resolves to `entity_risk_lookup`, the only filter is the account id, and the agent runs
+`feature_eng → anomaly → risk → explain`. EDA is skipped and reported as skipped. The account
+comes back at composite risk 0.86 with an anomaly score of 0.9974 and five motif hits, and the
+answer names the shape it found: funds collected from 327 distinct senders and redistributed to
+28, a 683.6% pass-through rate.
 
-### 2. Execution summary, the transparency panel
+![Entity lookup](assets/03-entity-lookup.png)
 
-**Query:** the same run as above.
-**Capture:** the execution summary panel alone, expanded, showing `intent_detected`,
-`filters_applied`, the tools invoked in order, and the tools skipped with their reasons. This is
-the panel that proves the pipeline is not fixed.
-
-![Execution summary](screenshots/02-execution-summary.png)
-
-### 3. Aggregate query, a different route through the same agent
+### Aggregate query
 
 **Query:** `How many customers made 10 or more transactions under $10,000?`
-**Capture:** the result showing `eda` invoked alone, with `anomaly`, `risk` and `explain` listed as
-skipped ("a threshold question is answered by aggregation").
 
-![Aggregate query](screenshots/03-aggregate-query.png)
+The same agent, a completely different plan. Intent is `aggregate_eda`, the filters are
+`amount_paid < 10000` and `min_transactions 10`, and `eda` runs alone while the four ML tools sit
+unused. A threshold question is answered by aggregation, so the answer is a number: 91,575
+customers. The charts at the top are evidence carried over from the previous run.
 
-### 4. Pattern search over a filtered slice
+![Aggregate query](assets/04-aggregate-query.png)
+
+### Pattern search over a filtered slice
 
 **Query:** `Find structuring patterns in the last 30 days`
-**Capture:** the flagged-items table with several accounts, each carrying its own risk level,
-detected motif and explanation.
 
-![Pattern search](screenshots/04-pattern-search.png)
+Intent is `structuring_pattern_search`. The window resolves against the end of the data rather
+than wall-clock now, giving a real `date_range` alongside `max_amount 5000` and
+`velocity_window_days 30`. Account 1004286F0 is flagged HIGH on FAN-OUT for moving $17.4 billion
+across 1,223 distinct receivers inside 24 hours, with a recommended action of REVIEW.
 
-### 5. Streaming progress mid-run
+![Pattern search](assets/05-pattern-search.png)
 
-**Query:** any of the above, captured while it is still running.
-**Capture:** the thinking indicator with tool events ticking in live, so `anomaly`, `risk` and
-`explain` appear one at a time as they dispatch over SSE.
+### Escalations, the audit trail
 
-![Streaming progress](screenshots/05-streaming.png)
+Every flag a human escalated, newest first, each joined back to the query that surfaced it. This
+reads from SQLite rather than session state, so it survives a reload and spans conversations.
+Escalating is one click, so it can also be undone: the flag survives and only the human action is
+cleared.
 
-### 6. Escalations, the audit trail
+![Escalations](assets/06-escalations.png)
 
-**Action:** escalate one flag from run #1, add a note such as
-`Confirmed SCATTER-GATHER, forwarding to FIU`, then open the Escalations tab.
-**Capture:** the escalated row joined back to the query that surfaced it.
+### Dashboard
 
-![Escalations](screenshots/06-escalations.png)
+Aggregates over every run ever recorded, not just the current conversation: 56 queries run, 21
+items flagged, 5 escalated by an analyst (24% of flags acted on), plus flags by risk level, motifs
+detected, tool usage and the most-flagged accounts.
 
-### 7. Dashboard, aggregates across every session
-
-**Action:** open the Dashboard tab after two or three runs.
-**Capture:** totals, escalation rate, flags by risk level, motif frequency, tool-usage counts.
-
-![Dashboard](screenshots/07-dashboard.png)
+![Dashboard](assets/07-dashboard.png)
 
 ---
 
