@@ -14,7 +14,7 @@ terms of the rule or feature that fired, and recommends an escalation action.
 | | |
 |---|---|
 | **Problem statement** | #1, AI-Powered Suspicious Activity Detection |
-| **Dataset** | IBM *Synthetic Transaction Data for AML*, `HI-Small` split (Kaggle) |
+| **Dataset** | [IBM *Synthetic Transaction Data for AML*](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml), `HI-Small` split |
 | **Scale** | 5,078,345 transactions, 518,581 accounts, 0.102% laundering base rate |
 | **Agent** | Hand-rolled tool-calling loop over Gemini, 5 ML tools plus escalation |
 | **Detection** | Isolation Forest + LOF + z-score, blended by measured lift, over an 8-motif graph rules engine |
@@ -586,8 +586,11 @@ python scripts/tune_blend.py             # runs the constant search
 
 ### 1. Dataset
 
-Download the IBM *Synthetic Transaction Data for AML* set (`HI-Small`) from Kaggle and put three
-files in `backend/data/raw/`:
+Download the dataset from Kaggle:
+
+**<https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml>**
+
+It ships every size split. Take the three `HI-Small` files and put them in `backend/data/raw/`:
 
 ```
 backend/data/raw/HI-Small_Trans.csv
