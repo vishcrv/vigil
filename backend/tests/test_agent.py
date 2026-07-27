@@ -86,17 +86,14 @@ def test_loop_returns_valid_agent_result_with_transparency():
 
 
 def test_check_api_key_raises_when_key_missing(monkeypatch):
-    monkeypatch.setitem(providers.KEY_VARS, "anthropic", "TEST_FAKE_KEY_VAR")
+    monkeypatch.setattr(providers, "KEY_VAR", "TEST_FAKE_KEY_VAR")
     monkeypatch.delenv("TEST_FAKE_KEY_VAR", raising=False)
     with pytest.raises(RuntimeError, match="TEST_FAKE_KEY_VAR"):
-        check_api_key("anthropic")
+        check_api_key()
 
     monkeypatch.setenv("TEST_FAKE_KEY_VAR", "   ")  # empty-ish counts as missing
     with pytest.raises(RuntimeError, match="TEST_FAKE_KEY_VAR"):
-        check_api_key("anthropic")
-
-    with pytest.raises(RuntimeError, match="LLM_PROVIDER"):
-        check_api_key("openai")
+        check_api_key()
 
 
 def test_loop_caps_runaway_tool_requests():

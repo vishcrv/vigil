@@ -387,8 +387,8 @@ anything about this workstream's internals:
 from ml.tools import TOOL_SCHEMAS, dispatch, FLAGS_COLUMN_MAP
 
 # TOOL_SCHEMAS: list of {name, description, input_schema} in plain JSON Schema — what
-#   Anthropic tool_use, OpenAI/Groq function-calling and Gemini all consume, modulo a
-#   wrapper key each. No SDK is imported anywhere in this workstream.
+#   Gemini function declarations are built from, via agent/providers.py. No SDK is
+#   imported anywhere in this workstream.
 result = dispatch(tool_name, tool_args)   # always a dict, never raises
 ```
 

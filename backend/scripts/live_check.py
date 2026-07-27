@@ -3,7 +3,7 @@
 Run from backend/:   python scripts/live_check.py
                      python scripts/live_check.py "Is customer 100428930 suspicious?"
 
-Spends provider quota — one run is several requests. Writes to a throwaway SQLite file so it
+Spends Gemini quota: one run is several requests. Writes to a throwaway SQLite file so it
 never touches ./aml_agent.db.
 
 This drives the FastAPI app through TestClient rather than over HTTP, so it exercises exactly

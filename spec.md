@@ -38,32 +38,23 @@ without checking the others.
    each run, updated by `/escalate`. This is cheap (stdlib `sqlite3`, one file, no server) and buys
    two real things: an actual audit trail, which fits a compliance product, and a working `/escalate`
    endpoint instead of a stub. See Database Schema below for the full shape.
-4. **LLM: ~~Claude for dev~~ → Gemini for dev, provider-agnostic for judges.** **⚠ REVERSED during
-   implementation (2026-07-25).** The original call was to develop and test against Claude
-   (`LLM_PROVIDER=anthropic`). In practice **no Anthropic API key was obtainable** — a Claude
-   *subscription* (claude.ai) does not include API credits; the Anthropic API is separately billed
-   via console.anthropic.com. Dev/testing therefore runs on **Gemini** (`LLM_PROVIDER=gemini`,
-   model `gemini-flash-latest`), which has a usable free tier.
-   - The hand-rolled provider-agnostic loop (item 4a, unchanged) is what made this a config-level
-     swap plus one new wrapper class — `agent/loop.py` needed zero changes. This is the design
-     paying for itself.
-   - **Anthropic support is still built and still the code default**, just never exercised against
-     the live API. Groq still raises `NotImplementedError`.
-   - **README disclosure must say Gemini, not Claude** — state plainly that the team built and
-     tested against Google's Gemini API, that Anthropic is implemented but untested, and that
-     `LLM_PROVIDER` lets judges swap in whichever key they hold. Disclosing "tested against Claude"
-     would now be false.
+4. **LLM: Gemini, single provider.** The agent runs on Google's Gemini API, model alias
+   `gemini-flash-lite-latest`, read from `GOOGLE_API_KEY`. Chosen for a free tier large enough to
+   demo on, and for low latency across the several sequential calls one run makes. The
+   multi-provider abstraction that briefly existed here was removed: one provider, one key, one
+   code path, and nothing in the setup steps a judge has to choose between.
+   - The alias rather than a pinned model id is load-bearing. Pinned 2.0/2.5 ids return 404 or a
+     zero-quota 429 on new keys, and `gemini-flash-latest` allows only 20 requests/day, which one
+     query can spend a quarter of.
    - Practical gotcha worth carrying into the README's setup steps: the Gemini key must come from
-     **aistudio.google.com/apikey**, not the Google Cloud Console — Cloud-Console-issued keys land
+     **aistudio.google.com/apikey**, not the Google Cloud Console. Cloud-Console-issued keys land
      in a project with a zero free-tier quota grant and fail with `429 RESOURCE_EXHAUSTED`
      regardless of enabling the API.
-4a. **Orchestration: hand-rolled tool-calling loop, not headless Claude Code CLI, not LangGraph.**
-   (Unchanged from the previous revision, kept here for continuity.) This was briefly changed to
-   headless Claude Code CLI mid-planning, then reverted because it can't satisfy "judges drop
-   whichever provider's key they have into `.env`": Claude Code is Anthropic-only and needs its own
-   CLI installed, not just a key. See Section "Agent Orchestration" below for the final shape. Claude
-   Code remains fine as a dev-time coding assistant (disclose in README like any AI tool used), just
-   not the query-time engine.
+4a. **Orchestration: hand-rolled tool-calling loop, not LangGraph.** FastAPI makes the API call
+   itself, and all SDK translation lives in `agent/providers.py`, so the loop speaks one internal
+   message shape and never imports the SDK. That is what keeps the whole agent testable against a
+   fake client with no key and no network. See Section "Agent Orchestration" below for the final
+   shape.
 5. **Feedback-driven threshold refinement stretch feature: cut, not attempted.** No time is budgeted
    for it. It was already flagged as absent from the actual problem statement text, so cutting it
    entirely (rather than leaving it as a maybe) removes the risk of it quietly eating hours 40-48.
@@ -89,13 +80,10 @@ without checking the others.
 Frontend  : React 18 + Vite, TypeScript (--template react-ts)
 State     : React built-ins (useState/useContext), no state library planned; SPA is one page
 Backend   : FastAPI (Python, async)
-Agent     : Hand-rolled LLM tool-calling loop, provider selected via `LLM_PROVIDER` env var,
-            NOT headless Claude Code CLI (tried mid-session, reverted, see Q4a), NOT LangGraph
-LLM       : Gemini (`LLM_PROVIDER=gemini`, `gemini-flash-latest`) is what dev/testing actually
-            runs on — see Decisions Log item 4, reversed from Claude because no Anthropic API
-            key was obtainable. Anthropic built + code-default but live-untested; Groq not built.
-Dev tool  : Claude Code (interactive or headless) may be used to help *write* this code; that's a
-            dev-time tool, disclosed in README like any AI assistant, and does not run at query time
+Agent     : Hand-rolled LLM tool-calling loop, NOT LangGraph
+LLM       : Gemini, `gemini-flash-lite-latest`, key in `GOOGLE_API_KEY` (Decisions Log item 4)
+Dev tool  : An AI coding assistant may be used to help *write* this code; that's a dev-time tool,
+            disclosed in README per competition rule 3, and does not run at query time
 Database  : SQLite (`queries` + `flags` tables, audit trail + working `/escalate`). Bulk data still
             flat files (Parquet); SQLite is only for the small persisted-history layer.
 Query     : DuckDB directly over Parquet (aggregation/threshold queries)
@@ -193,13 +181,12 @@ clone doesn't hit a path-not-found from running `uvicorn` out of the repo root i
 **[PLANNED, NOT BUILT]**
 
 Decided (final, after one reversal, see Q4a): the runtime agent is a **hand-rolled tool-calling
-loop against the active provider's native SDK**, not headless Claude Code CLI and not LangGraph.
-This is the setting where "judges paste any provider's key into `.env`" is actually achievable:
-FastAPI makes the API call itself, so any Anthropic/OpenAI/Groq/Gemini-compatible key just works
-once `LLM_PROVIDER` points at it. Nothing external needs installing beyond your own `requirements.txt`.
+loop against the Gemini SDK**, not LangGraph. FastAPI makes the API call itself, so a judge's
+setup is `pip install -r requirements.txt`, drop a Gemini key in `.env`, run. Nothing external
+needs installing beyond your own `requirements.txt`.
 
 ```
-POST /api/v1/analyze  →  parse LLM_PROVIDER + matching key from .env  →  get_client(provider)  →
+POST /api/v1/analyze  →  read GOOGLE_API_KEY from .env  →  get_client()  →
                           tool_calling_loop(client, query, tools=[eda, feature_eng, anomaly,
                           risk, explain, escalate])  →  validate against AgentResult Pydantic
                           schema  →  return to frontend
@@ -209,21 +196,20 @@ POST /api/v1/analyze  →  parse LLM_PROVIDER + matching key from .env  →  get
   classification, explanation, escalation) are plain Python functions registered with the loop as
   tool-call targets (native `tool_use`/function-calling schemas per provider), not shelled-out
   scripts. Not written yet.
-- **Provider abstraction**: `get_client(provider: str)` returns a thin wrapper exposing a common
-  `chat_with_tools(...)` interface over Anthropic's Messages API, OpenAI-style function-calling
-  (used by both OpenAI and Groq's compatible endpoint), and Gemini's function-calling, so the loop
-  itself doesn't care which provider is active. Not written yet; this is the one piece of extra
-  code the reversal from Claude Code CLI actually costs you.
+- **SDK boundary**: `get_client()` returns a thin wrapper exposing `chat_with_tools(...)`. All
+  translation between the loop's own message shape and Gemini's `Content`/`Tool` types lives in
+  `agent/providers.py`, so `agent/loop.py` never imports the SDK and can be tested against a fake
+  client with no key and no network.
 - **Transparency feed**: since you're writing the loop, log each tool call (name, args, result) as
   you dispatch it. This becomes the source for the "execution summary: tools invoked / skipped /
-  why" panel. More code than Claude Code's free `stream-json` trace would have given you, but fully
-  under your control and provider-independent.
-- **No CLI dependency, no lock-in, no separate install step**: this is the direct payoff of the
-  reversal. A judge's setup is `pip install -r requirements.txt`, drop a key in `.env`, run.
+  why" panel. It is more code than a framework's built-in trace would have been, but it is fully
+  under your control.
+- **No CLI dependency, no separate install step**: a judge's setup is
+  `pip install -r requirements.txt`, drop a key in `.env`, run.
 - **Deck/README framing note**: this version is the one where "here's our intent parser, here's our
   planner, here's how we dispatch tools" is genuinely your own code, a stronger technical-details
-  slide than the Claude-Code-CLI version would have been, at the cost of the provider-abstraction
-  layer above being work you have to actually write.
+  slide than delegating it to a framework would have been, at the cost of the SDK-boundary layer
+  above being work you have to actually write.
 
 ---
 
@@ -400,11 +386,7 @@ on decided stack:
 ### Backend (`.env`, not yet created, gitignored, `.env.example` with placeholders committed instead)
 ```
 # Which provider the agent loop uses, judges set this to match whichever key they have
-LLM_PROVIDER=anthropic     # anthropic | groq | gemini
-
-# Only the key matching LLM_PROVIDER is required; the other two are unused if unset
-ANTHROPIC_API_KEY=
-GROQ_API_KEY=
+# Gemini key, from https://aistudio.google.com/apikey (NOT the Google Cloud Console)
 GOOGLE_API_KEY=
 
 # Data paths
@@ -435,10 +417,9 @@ VITE_API_BASE_URL=http://localhost:8000   # FastAPI backend URL, no default deci
      the team confirmed a 2-person split where a real frontend/backend boundary earns its keep (see
      Open Question 1, if it turns out to be solo, revisit whether Streamlit-only was the better call).
   2. Agent orchestration: started as a hand-rolled provider SDK loop → briefly changed to headless
-     Claude Code CLI for the dev-speed win → reversed back to the hand-rolled loop once "judges can
-     drop in any provider's key" turned out to be incompatible with Claude Code being Anthropic-only
-     and requiring a separate CLI install (see Decisions Log item 4a). Claude Code remains usable as
-     a dev-time coding assistant, just not as the query-time engine.
+     a framework-hosted loop for the dev-speed win → reversed back to the hand-rolled loop, since
+     the loop is the part the brief actually grades and hiding it behind a framework would have
+     cost the transparency feed (see Decisions Log item 4a).
 
   As of this revision, all seven previously-open items in the Decisions Log are resolved. Nothing
   is drifting silently; if a future session wants to change one of these, treat it as a deliberate

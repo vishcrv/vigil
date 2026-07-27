@@ -1,7 +1,6 @@
 """The two routes spec.md settles on: /analyze runs the agent, /escalate records a human decision."""
 
 import json
-import os
 import queue
 import threading
 
@@ -26,7 +25,7 @@ router = APIRouter()
 
 @router.post("/analyze", response_model=AgentResult)
 def analyze(req: AnalyzeRequest) -> AgentResult:
-    client = get_client(os.getenv("LLM_PROVIDER", "anthropic"))
+    client = get_client()
     try:
         result = tool_calling_loop(client, req.query)
     except ProviderError as e:
@@ -102,7 +101,7 @@ def analyze_stream(req: AnalyzeRequest) -> StreamingResponse:
 
     def run() -> None:
         try:
-            client = get_client(os.getenv("LLM_PROVIDER", "anthropic"))
+            client = get_client()
             result = tool_calling_loop(
                 client, req.query, on_event=lambda kind, payload: events.put((kind, payload))
             )

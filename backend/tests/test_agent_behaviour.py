@@ -170,7 +170,7 @@ def test_parallel_tool_calls_in_one_turn_are_all_recorded():
 
 
 def test_prose_instead_of_json_still_yields_a_valid_result():
-    """The one failure mode most likely to surface on a provider swap: the model narrates
+    """The one failure mode most likely to surface on a model swap: the model narrates
     instead of closing with the JSON object. The run must degrade, not 500."""
     result = tool_calling_loop(
         ScriptedClient([Reply("I looked and found nothing unusual.", [], [])]), "anything odd?"
@@ -253,7 +253,7 @@ def test_a_failing_tool_does_not_abort_the_run(monkeypatch):
 def live_client():
     from agent.providers import get_client
 
-    return get_client(os.getenv("LLM_PROVIDER", "gemini"))
+    return get_client()
 
 
 def _report(label, result):

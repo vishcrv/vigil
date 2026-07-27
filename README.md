@@ -16,7 +16,7 @@ terms of the rule or feature that fired, and recommends an escalation action.
 | **Problem statement** | #1, AI-Powered Suspicious Activity Detection |
 | **Dataset** | IBM *Synthetic Transaction Data for AML*, `HI-Small` split (Kaggle) |
 | **Scale** | 5,078,345 transactions, 518,581 accounts, 0.102% laundering base rate |
-| **Agent** | Hand-rolled provider-agnostic tool-calling loop, 5 ML tools plus escalation |
+| **Agent** | Hand-rolled tool-calling loop over Gemini, 5 ML tools plus escalation |
 | **Detection** | Isolation Forest + LOF + z-score, blended by measured lift, over an 8-motif graph rules engine |
 | **Interface** | FastAPI, React 19 + Vite, SQLite audit trail |
 | **Tests** | 423 backend (pytest), 10 frontend (vitest) |
@@ -158,8 +158,8 @@ flowchart TB
     subgraph AG["Agent · hand-rolled tool-calling loop"]
         direction TB
         LOOP["loop.py<br/>plan → dispatch → validate"]
-        PROV["providers.py<br/>Gemini · Anthropic"]
-        LOOP <-->|"native tool_use"| PROV
+        PROV["providers.py<br/>Gemini client"]
+        LOOP <-->|"function calls"| PROV
     end
 
     subgraph TL["Tool surface · ml/tools.py"]
@@ -181,7 +181,7 @@ flowchart TB
 
     UI -->|"HTTP + SSE"| API
     RA --> LOOP
-    PROV -.->|"LLM_PROVIDER"| EXT["Gemini API<br/><i>or any provider key</i>"]
+    PROV -.->|"GOOGLE_API_KEY"| EXT["Gemini API<br/><i>gemini-flash-lite-latest</i>"]
     LOOP --> TL
     T1 & T2 & T3 --> PQ
     T3 --> RH
@@ -240,7 +240,7 @@ sequenceDiagram
     participant A as Analyst
     participant F as React SPA
     participant L as Agent loop
-    participant G as LLM provider
+    participant G as Gemini
     participant T as ML tools
     participant S as SQLite
 
@@ -271,8 +271,8 @@ sequenceDiagram
 
 | Decision | Choice | Reason |
 |---|---|---|
-| Orchestration | Hand-rolled loop over each provider's native SDK | LangGraph and headless Claude Code CLI were both evaluated and rejected. The CLI is Anthropic-only and needs a separate install, which breaks "a judge drops whichever key they hold into `.env`". Writing the loop also means the intent parsing, planning and dispatch are genuinely our code. |
-| Provider abstraction | `get_client(provider)` returning a common `chat_with_tools` | When no Anthropic API key turned out to be obtainable, the switch to Gemini was a config change plus one wrapper class. `agent/loop.py` needed zero changes. |
+| Orchestration | Hand-rolled loop over the Gemini SDK | LangGraph was evaluated and rejected. A framework would have hidden the part the brief actually grades: writing the loop means the intent parsing, planning and dispatch are genuinely our code, and the transparency feed falls out of the dispatch log for free. |
+| SDK boundary | All Gemini translation lives in `agent/providers.py` | `agent/loop.py` speaks one internal message shape and never imports the SDK, so the loop stays testable against a fake client with no network and no key. |
 | Bulk storage | Parquet and DuckDB, no database server | 5.08M rows by 32 columns. Columnar scans over an embedded engine beat standing up Postgres for a read-only analytical workload. |
 | Persisted history | Stdlib `sqlite3`, two tables | An audit trail is what makes a compliance product credible, and it turns `/escalate` from a stub into a real feature. One file, no server. |
 | Detector fitting | Pre-fit at build time, artifacts written to `data/models/` | Fitting per call was rejected: a 70-row account scope produces a meaningless forest, and identical calls would return different scores. LOF uses `novelty=True` so it can score unseen rows. |
@@ -560,8 +560,8 @@ python scripts/tune_blend.py             # runs the constant search
 | **Charts** | Plotly.js via react-plotly.js | Risk distribution, temporal activity, rule mix |
 | **Frontend tests** | Vitest, Testing Library, jsdom | 10 tests over API parsing and CSV export |
 | **Backend** | FastAPI and Uvicorn, Python | Async, native SSE, free OpenAPI docs at `/docs` |
-| **Agent** | Hand-rolled tool-calling loop | Provider-agnostic, see [architectural calls](#why-these-architectural-calls) |
-| **LLM** | Google Gemini (`gemini-flash-lite-latest`), Anthropic implemented | Selected by `LLM_PROVIDER`, see [disclosure](#llm-provider-disclosure) |
+| **Agent** | Hand-rolled tool-calling loop | See [architectural calls](#why-these-architectural-calls) |
+| **LLM** | Google Gemini, `gemini-flash-lite-latest` | Free tier large enough to demo on, and low latency across several sequential calls |
 | **Validation** | Pydantic | `AgentResult` is a frozen contract, and malformed model output is dropped rather than rendered |
 | **Bulk query** | DuckDB over Parquet | Embedded columnar engine, no server, no ETL into a database |
 | **Data processing** | pandas, NumPy, PyArrow | One-time enrichment pass over 5.08M rows |
@@ -603,7 +603,6 @@ cp .env.example .env
 Get a Gemini key from <https://aistudio.google.com/apikey> and put it in `backend/.env`:
 
 ```
-LLM_PROVIDER=gemini
 GOOGLE_API_KEY=...
 ```
 
@@ -612,8 +611,7 @@ GOOGLE_API_KEY=...
 > project with a zero free-tier quota grant and fails every call with `429 RESOURCE_EXHAUSTED` no
 > matter what you enable on it.
 
-To run it on Anthropic instead, set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...`. See the
-[disclosure](#llm-provider-disclosure) below for what that path has and has not been tested against.
+The backend fails fast at startup if the key is missing, rather than on the first query.
 
 ### 3. Build the data artifacts
 
@@ -777,7 +775,7 @@ backend/
   db.py                   sqlite3: schema, insert, escalate, stats, retention
   agent/
     loop.py               the tool-calling loop, system prompt, flag recovery
-    providers.py          get_client(provider) -> chat_with_tools
+    providers.py          Gemini client, get_client() -> chat_with_tools
   api/routes/agent.py     the six routes, SSE streaming
   ml/
     tools.py              TOOL_SCHEMAS + dispatch, the hand-off surface
@@ -798,7 +796,7 @@ backend/
     build_rule_hits.py    -> Rule_Hits.parquet
     validate_risk_levels.py   precision/recall against ground truth
     tune_blend.py         constant search
-    live_check.py         one end-to-end run against the live provider
+    live_check.py         one end-to-end run against the live API
   notebooks/01_exploration.ipynb    Phase 1 EDA
   docs/                   ml_spec.md, phase1.md through phase7.md, ml_audit.md
   tests/                  16 test modules
@@ -864,30 +862,30 @@ It runs locally only, with no auth, no deployment and a single user, by explicit
 | Source | Use | Licence / access |
 |---|---|---|
 | [IBM Transactions for Anti Money Laundering (AML)](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml), `HI-Small` split | The entire transaction, account and pattern corpus. Synthetic, published by IBM on Kaggle. | Kaggle, manual download. Not redistributed in this repo. |
-| Google Gemini API (`gemini-flash-lite-latest`) | The agent's reasoning and tool-selection engine at query time. | AI Studio free tier, key supplied by the operator via `.env`. |
-| Anthropic Messages API (`claude-sonnet-5`) | Alternate provider, selectable via `LLM_PROVIDER`. | Key supplied by the operator. Implemented but live-untested, see below. |
+| Google Gemini API (`gemini-flash-lite-latest`) | The agent's reasoning and tool-selection engine at query time. | AI Studio free tier, key supplied by the operator via `GOOGLE_API_KEY` in `.env`. |
 
 No other external data source is used. No third-party AML watchlist, sanctions list or external API
 is consulted at query time. Every number quoted in this README is computed from the Kaggle dataset
 by scripts in `backend/scripts/`.
 
-### LLM provider disclosure
+### Model disclosure
 
-Development and testing ran against Google Gemini (`LLM_PROVIDER=gemini`). The original plan was
-Anthropic, reversed during implementation because no Anthropic API key turned out to be obtainable:
-a Claude subscription does not include API credits, which are billed separately.
+The agent runs on Google Gemini, model alias `gemini-flash-lite-latest`. The alias is deliberate
+rather than a pinned version: pinned 2.0 and 2.5 model ids return 404 or a zero-quota 429 on new
+free-tier keys, and `gemini-flash-latest` allows only 20 requests per day, which one query can
+spend a quarter of. Flash-lite has a separate and far larger daily bucket, plus lower latency
+across the several sequential calls one run makes.
 
-Anthropic support is implemented and is the code default, but it has never been exercised against
-the live API. Groq raises `NotImplementedError`. The provider abstraction is what made that switch
-a config change plus one wrapper class, with zero changes to `agent/loop.py`.
-
-Set `LLM_PROVIDER` to match whichever key you hold.
+`agent/providers.py` is the only module that imports the SDK. The loop speaks its own message
+shape and never sees a Gemini type, which is what lets the whole agent be tested against a fake
+client with no key and no network.
 
 ## AI tool disclosure
 
-Claude Code was used as a development-time coding assistant while writing this repository. It is a
-dev-time tool only. It does not run at query time and is not part of the deployed system. The
-runtime agent is the hand-rolled loop in `backend/agent/loop.py` calling the provider's own SDK.
+Claude Code was used as a development-time coding assistant while writing this repository, and is
+disclosed here per competition rule 3. It is a dev-time tool only. It does not run at query time
+and is not part of the shipped system. The runtime agent is the hand-rolled loop in
+`backend/agent/loop.py` calling the Gemini SDK.
 
 ---
 

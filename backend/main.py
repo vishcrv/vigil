@@ -1,10 +1,9 @@
 """FastAPI entrypoint. Run from `backend/`: uvicorn main:app --reload
 
-Startup fails fast if the configured provider's API key is missing (spec.md's
-Environment Variables section: better a clear error here than on first query).
+Startup fails fast if the Gemini API key is missing (spec.md's Environment Variables
+section: better a clear error here than on first query).
 """
 
-import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -20,7 +19,7 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    check_api_key(os.getenv("LLM_PROVIDER", "anthropic"))
+    check_api_key()
     with get_connection() as conn:
         init_db(conn)
     yield

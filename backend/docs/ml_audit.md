@@ -188,8 +188,8 @@ python -m pytest -q                # 305 passed
 ```python
 from ml.tools import TOOL_SCHEMAS, dispatch, FLAGS_COLUMN_MAP
 
-# TOOL_SCHEMAS: [{name, description, input_schema}] in plain JSON Schema — what Anthropic
-#   tool_use, OpenAI/Groq function-calling and Gemini all consume, modulo a wrapper key each.
+# TOOL_SCHEMAS: [{name, description, input_schema}] in plain JSON Schema, which
+#   agent/providers.py wraps into Gemini function declarations at call time.
 result = dispatch(tool_name, tool_args)   # always a dict, never raises
 ```
 

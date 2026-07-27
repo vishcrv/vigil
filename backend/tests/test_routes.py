@@ -37,10 +37,10 @@ def _fake_result() -> AgentResult:
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key-not-real")
     import api.routes.agent as route_mod
 
-    monkeypatch.setattr(route_mod, "get_client", lambda provider: object())
+    monkeypatch.setattr(route_mod, "get_client", lambda: object())
     monkeypatch.setattr(route_mod, "tool_calling_loop", lambda client, query: _fake_result())
     import main
 
@@ -68,8 +68,7 @@ def test_escalate_persists_then_404s_on_unknown_flag(client):
 
 def test_startup_fails_fast_without_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
     import main
 
     with pytest.raises(Exception):  # noqa: B017 - any startup failure is the point

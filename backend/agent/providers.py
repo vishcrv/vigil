@@ -1,6 +1,9 @@
-"""Provider wrappers for the agent loop. Anthropic is the dev default; Gemini also built (both
-translate to/from the loop's Anthropic-shaped messages/tools inside `chat_with_tools`, so the loop
-itself stays provider-agnostic). Groq not built yet.
+"""Gemini client for the agent loop.
+
+`chat_with_tools` is the only interface `agent/loop.py` uses: it takes the loop's own
+messages/tools shape, translates it into Gemini's `Content`/`Tool` shape, and translates the
+response back. The loop never inspects what comes out beyond `Reply`, so the translation stays
+entirely inside this module.
 """
 
 import json
@@ -11,17 +14,13 @@ from typing import NamedTuple
 import truststore
 from dotenv import load_dotenv
 
-# Use the OS's own certificate store instead of the certifi bundle both SDKs' HTTP clients
-# default to - some local/corporate networks terminate TLS with a root CA that's in the OS
+# Use the OS's own certificate store instead of the certifi bundle the SDK's HTTP client
+# defaults to - some local/corporate networks terminate TLS with a root CA that's in the OS
 # store but not in certifi's, which otherwise breaks every live call with a cert-chain error.
 truststore.inject_into_ssl()
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-# Model ID from the `claude-api` skill (current as of 2026-07). Don't guess this.
-# Sonnet over Opus deliberately: the loop makes several tool-calling round trips per
-# query, so latency is visible during a live demo, and judges run this on their own keys.
-MODEL = "claude-sonnet-5"
 MAX_TOKENS = 8000
 
 # Flash-lite, and the alias rather than a pinned version. Every part of this is load-bearing on
@@ -34,11 +33,7 @@ MAX_TOKENS = 8000
 #     lower latency, which matters when the loop makes several sequential calls in a live demo.
 GEMINI_MODEL = "gemini-flash-lite-latest"
 
-KEY_VARS = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "gemini": "GOOGLE_API_KEY",
-}
+KEY_VAR = "GOOGLE_API_KEY"
 
 
 class Reply(NamedTuple):
@@ -48,8 +43,8 @@ class Reply(NamedTuple):
 
 
 class ProviderError(RuntimeError):
-    """An upstream LLM API call failed. Keeps provider-specific SDK exceptions from leaking into
-    the routes, so `api/routes/agent.py` can map any provider's failure to one HTTP response.
+    """An upstream Gemini API call failed. Keeps SDK exceptions from leaking into the routes,
+    so `api/routes/agent.py` can map any upstream failure to one HTTP response.
 
     `status` is the upstream HTTP status where there was one (429 for quota, etc.), else None.
     """
@@ -59,51 +54,23 @@ class ProviderError(RuntimeError):
         self.status = status
 
 
-def check_api_key(provider: str) -> None:
-    """Raise RuntimeError if the key for `provider` is missing. Called at FastAPI startup."""
-    var = KEY_VARS.get(provider)
-    if var is None:
+def check_api_key() -> None:
+    """Raise RuntimeError if the Gemini key is missing. Called at FastAPI startup."""
+    if not (os.getenv(KEY_VAR) or "").strip():
         raise RuntimeError(
-            f"LLM_PROVIDER={provider!r} is not one of {sorted(KEY_VARS)}. Fix it in backend/.env."
+            f"{KEY_VAR} is not set in backend/.env. Get a key from "
+            f"https://aistudio.google.com/apikey and add it."
         )
-    if not (os.getenv(var) or "").strip():
-        raise RuntimeError(
-            f"{var} is not set in backend/.env, but LLM_PROVIDER={provider}. "
-            f"Add the key, or set LLM_PROVIDER to a provider whose key you have."
-        )
-
-
-class AnthropicClient:
-    def __init__(self, api_key: str):
-        import anthropic
-
-        self._client = anthropic.Anthropic(api_key=api_key)
-
-    def chat_with_tools(self, messages: list, tools: list, system: str) -> Reply:
-        message = self._client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=system,
-            tools=tools,
-            messages=messages,
-        )
-        text = "".join(b.text for b in message.content if b.type == "text")
-        calls = [
-            {"id": b.id, "name": b.name, "input": b.input}
-            for b in message.content
-            if b.type == "tool_use"
-        ]
-        return Reply(text=text, tool_calls=calls, assistant_content=message.content)
 
 
 class GeminiClient:
-    """Translates the loop's Anthropic-shaped messages/tools into Gemini's shape and back.
+    """Translates the loop's messages/tools into Gemini's shape and back.
 
     The loop (agent/loop.py) only ever replays `messages` through the SAME client that produced
-    them, and never inspects `Reply.assistant_content` itself — it just appends it verbatim to
-    `messages` and re-sends the whole list next iteration. That means `assistant_content` doesn't
-    have to be real Anthropic SDK objects; it only has to be something *this* client can parse back
-    into Gemini's `Content` shape on the next call. Here it's a small list of plain dicts:
+    them, and never inspects `Reply.assistant_content` itself - it just appends it verbatim to
+    `messages` and re-sends the whole list next iteration. That means `assistant_content` only
+    has to be something *this* client can parse back into Gemini's `Content` shape on the next
+    call. Here it's a small list of plain dicts:
     {"type": "text", "text": ...} or {"type": "tool_use", "id": ..., "name": ..., "input": ...}.
     """
 
@@ -157,7 +124,7 @@ class GeminiClient:
                     )
                 elif btype == "tool_result":
                     # tool_use_id is "<name>#<i>" (see chat_with_tools below) so the function
-                    # name can be recovered — Gemini's FunctionResponse needs it, Anthropic's
+                    # name can be recovered - Gemini's FunctionResponse needs it, and the loop's
                     # tool_result block only carries the opaque id.
                     name = block["tool_use_id"].rsplit("#", 1)[0]
                     try:
@@ -224,15 +191,7 @@ class GeminiClient:
         return Reply(text="".join(text_chunks), tool_calls=tool_calls, assistant_content=assistant_content)
 
 
-def get_client(provider: str):
-    """Return a wrapper exposing .chat_with_tools(messages, tools, system) -> Reply."""
-    if provider == "groq":
-        raise NotImplementedError(
-            "LLM_PROVIDER=groq is not implemented yet: needs the groq SDK in requirements.txt "
-            "plus a wrapper translating its function-calling shape to Anthropic-style content "
-            "blocks. Use LLM_PROVIDER=anthropic or gemini for now."
-        )
-    check_api_key(provider)  # unknown provider or missing key -> RuntimeError
-    if provider == "gemini":
-        return GeminiClient(os.environ[KEY_VARS["gemini"]])
-    return AnthropicClient(os.environ[KEY_VARS["anthropic"]])
+def get_client():
+    """Return a client exposing .chat_with_tools(messages, tools, system) -> Reply."""
+    check_api_key()  # missing key -> RuntimeError
+    return GeminiClient(os.environ[KEY_VAR])

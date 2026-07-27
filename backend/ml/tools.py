@@ -5,9 +5,8 @@ handed over as locked signatures before the orchestration loop is wired. This mo
 hand-off: one dispatch table, one JSON-Schema description per tool, and the mapping from
 `risk()` output to the `flags` table columns.
 
-Provider-neutral on purpose. `TOOL_SCHEMAS` is plain JSON Schema, which is what Anthropic's
-`tool_use` blocks, OpenAI/Groq function-calling and Gemini function declarations all consume,
-modulo a wrapper key each. Nothing here imports an SDK.
+`TOOL_SCHEMAS` is plain JSON Schema, which `agent/providers.py` wraps into Gemini function
+declarations at call time. Nothing here imports an SDK.
 
 Usage from the loop:
 
